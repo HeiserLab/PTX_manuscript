@@ -1,0 +1,12 @@
+# TNBC response to paclitaxel phenocopies interferon response which reveals cell cycle-associated resistance mechanisms ,,,,,,
+"# Nicholas L Calistri1, Tiera A. Liby1, Zhi Hu1, Hongmei Zhang1, Mark Dane1, Sean M. Gross1, Laura M. Heiser1,2,# (1 Biomedical Engineering Department, Oregon Health & Science University, Portland Oregon
+2 Knight Cancer Institute, Oregon Health & Science University, Portland Oregon
+# Corresponding author: heiserl@ohsu.edu)",,,,,,
+# Supplementary Information 6,,,,,,
+drug_a,cell_line,pos_mean_rel_cell,pos_sd_rel_cell,neg_mean_rel_cell,neg_sd_rel_cell,z_score
+DMSO,HCC1143,1,0.11542706209662114,0.2016632330505698,0.089925134,0.22832492071504085
+PTX,HCC1143,0.718134302,0.1342168672880542,0.1265491252386775,0.039835772,0.1173580111393735
+DMSO,HCC1806,1,0.14195903630271586,0.072452998,0.023853776,0.4637054116343621
+PTX,HCC1806,0.8583498869288664,0.17615351545792013,0.029792188176898115,0.021939153134459967,0.28275603899126944
+DMSO,MDA-MB-468,1,0.23888494190466383,0.042726129,0.024539133634121645,0.17445545039404686
+PTX,MDA-MB-468,0.7511436874611538,0.1804208276263478,0.050011478870479145,0.029074675599022156,0.10361198362372737

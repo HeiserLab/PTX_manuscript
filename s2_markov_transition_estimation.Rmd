@@ -1,0 +1,663 @@
+---
+title: "230710_markov"
+author: "nlc"
+date: "2023-07-10"
+output:
+  rmdformats::downcute:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set up
+
+## Load libraries
+
+```{r}
+library(tidyverse)
+```
+
+## Load data
+
+```{r}
+l4 <- read_csv('240221_level_4.csv')
+```
+
+# Visualize initial results
+
+```{r}
+l4_2 <- l4 %>%
+  ungroup() %>%
+  filter(elapsed > 24 & elapsed <= 96) %>%
+  mutate(phase_multi = ifelse(phase == 'M',
+                              'M',
+                              ifelse(multinucleated,
+                                     paste0(phase, '_multi'),
+                                     paste0(phase, '_mono'))))  %>%
+  mutate(elapsed = elapsed - 24) #adjust for 24 hours between siRNA and PTX/DMSO treatment
+
+ggplot(l4_2, aes(x = elapsed, y = n_cell_sub, fill = phase))+
+  geom_col()+
+  facet_grid(drug~sirna)
+
+ggplot(l4_2, aes(x = elapsed, y = n_cell_sub, fill = phase_multi))+
+  geom_col()+
+  facet_grid(drug~sirna)+
+  theme_bw()
+
+ggplot(l4_2, aes(x = elapsed, y = prop_cells, fill = phase_multi))+
+  geom_col()+
+  facet_grid(drug~sirna)+
+  theme_bw()
+
+l4_3 <- l4_2 %>%
+  ungroup() %>%
+  group_by(drug, sirna, multinucleated, phase) %>%
+  mutate(roll_mean = data.table::frollmean(n_cell_sub, n = 5))
+
+ggplot(l4_3, aes(x = elapsed, y = roll_mean, color = phase_multi))+
+  geom_point()+
+  facet_grid(drug~sirna)+
+  theme_bw()+
+  xlab('Rolling mean of n_cells \n (centered, n = 5)')
+```
+
+# 'manual' version - ELF3 DMSO
+
+## Set up future packages
+
+```{r}
+library(future)
+plan("multisession", workers = 48)
+options(future.globals.maxSize = 2000*1024^2)
+```
+
+
+## Write functions
+
+```{r}
+random_transition <- function(states, prolif_mat){
+  rand <- matrix(data = sample(x = 1000,
+                       size = length(states)^2,
+                       replace = TRUE),
+         nrow = length(states),
+         ncol = length(states),
+         dimnames = list(prior = states,
+                         post = states))
+  
+  rand_binom <- matrix(data = rbinom(n = length(states)^2, size = 1, prob = 0.9),
+                       nrow = length(states),
+                       ncol = length(states),
+                       dimnames = list(prior = states,
+                                       post = states))
+  
+  rand_bound <- rand*(prolif_mat > 0)*rand_binom
+  
+  # Prevent a divide by zero induced by binomial noise
+  rbound_rowSums <- rowSums(rand_bound)
+  rbound_rowSums[rbound_rowSums == 0] <- 1
+  
+  # Normalize each row so it sums to 1
+  norm <- rand_bound/rbound_rowSums
+  
+  # If the matrix is not valid, replace with identitive matrix
+  if(sum(norm) != nrow(norm)){
+    norm <- matrix(data = 0,
+         nrow = length(states),
+         ncol = length(states),
+         dimnames = list(prior = states,
+                         post = states))
+    
+    diag(norm) <- 1
+  }
+  return(norm)
+}
+
+apply_transition <- function(trans_mat,
+                             cellstate_data,
+                             prolif_mat){
+  
+  markov_count_list <- list() # Initialize results list
+  
+  eff_trans <- trans_mat*prolif_mat # effective transition
+  
+  curr_in <- cellstate_data[1,] %>% # Set state at start
+    ungroup() %>%
+    dplyr::select(-elapsed)
+  
+  for(i in 1:(nrow(cellstate_data)-1)){
+
+    curr_out <- unlist(curr_in)*eff_trans
+    
+    curr_in <- colSums(curr_out)
+    
+    markov_count_list[[i]] <- as_tibble(t(curr_in)) %>%
+      mutate(elapsed = cellstate_data$elapsed[i + 1])
+
+  }
+  
+  markov_counts <- do.call(rbind, markov_count_list)
+  
+  return(markov_counts)
+}
+
+nrmse_fun <- function(obs, exp){
+  (sum((exp-obs)^2)/sum(obs^2))^0.5
+}
+
+rmsre_fun <- function(obs, exp){
+  ((length(unlist(obs))^-1 * sum(((exp - obs)/obs)^2)) )^0.5
+}
+
+rmsre_by_col <- function(obs, exp, metric = 'mean'){
+  
+  for(i in 1:ncol(obs)){
+    curr_error <- rmsre_fun(obs[,i], exp[,i])
+    
+    if(i == 1){
+      running_error <- curr_error
+    }else{
+      running_error <- c(running_error, curr_error)
+    }
+    
+  }
+  
+  if(metric == 'mean'){
+    error_out <- mean(running_error)
+  }
+  
+  if(metric == 'max'){
+    error_out <- max(running_error)
+  }
+  
+  return(error_out)
+}
+
+# obs <- tibble('G1' = 1:12, 'S/G2' = 13:24, 'M' = 25:36)
+# exp <- obs*1.05
+
+```
+
+# Rewrite as function
+
+```{r}
+solve_markov_states <- function(cellstate_data,
+                                prolif_mat,
+                                include_death = FALSE,
+                                n_epoch = 10,
+                                n_per_epoch = 3000,
+                                learning_rate = 0.1,
+                                annealing_rate = 2,
+                                death_weight = 0.5,
+                                n_best_perm = 5,
+                                elapsed_error_start = 0){
+  
+  # n_epoch = number of epochs to cycle through
+  # n_per_epoch = number of random mutations per epoch
+  # learning_rate = amount to deviate from prior best
+  # annealing_rate = number of epochs to halve learning rate
+  # death_weight = Weight penalty for each dead cell, 0 = no penalty for dead cell
+  # n_best_perm = number of best performing transition matrices to carry over to next epoch
+  # elapsed_error_start = elapsed value to start computing error at - useful if  you don't care about small errors early in the timecourse
+  
+  states <- grep(colnames(cellstate_data),
+                 pattern = 'elapsed',
+                 invert = TRUE,
+                 value = TRUE)
+  
+  if(sum(colnames(prolif_mat) %in% states) != length(states) | ncol(prolif_mat) != length(states)){
+    print('Error - states mismatch with proliferation matrix')
+  }
+  
+  prolif_mat <- prolif_mat[states,states]
+  
+  transition_list <- list()
+  markov_list <- list()
+  error_list <- list()
+  epoch_list <- list()
+  
+  start <- Sys.time()
+  for(epoch in 1:n_epoch){
+    print(paste0('Processing epoch #: ', epoch))
+    
+    start_loop <- Sys.time()
+    
+    # Generate random transition matrices
+    transition_list <- list()
+    for(i in 1:n_per_epoch){
+      transition_list[[i]] <- random_transition(states = states,
+                                                prolif_mat = prolif_mat)
+    }
+    
+    # Update to current learning rate based on number of elapsed epochs
+    current_learning_rate <- learning_rate/(2^((epoch - 1) %/% annealing_rate))
+    
+    # Create identity transition matrix
+    id_transition <- diag(length(states))
+    colnames(id_transition) <- rownames(id_transition) <- states
+    
+    # If its the first epoch, use the identity transition matrix as the prior best, otherwise add identity matrix to the pool of mutations
+    if(epoch == 1){
+      best_transitions <- list()
+      best_transitions[[1]] <- id_transition
+    }
+    
+    # Set seed transition as the prior best scaled by learning rate
+    seed_transitions <- list()
+    for(i in 1:length(transition_list)){
+      seed_transitions[[i]] <- best_transitions[[sample(length(best_transitions), size = 1)]]
+    }
+    
+    # Combine random transitions as modifiers to prior best
+    transition_list <- lapply(X = 1:length(transition_list),
+                                 FUN = function(x){transition_list[[x]]*current_learning_rate + seed_transitions[[x]]*(1-current_learning_rate)})
+    
+    # Filter so each transition is unique
+    transition_list <- unique(transition_list)
+    
+    # If it isn't the first epoch add the prior best transitions
+    if(epoch != 1){
+      for(k in 1:length(best_transitions)){
+        transition_list[[length(transition_list) + 1]] <- best_transitions[[k]]
+      }
+    }
+    
+    # Compute output of each markov transition rate
+    
+  
+    markov_list <- future.apply::future_lapply(X = transition_list,
+                          FUN = apply_transition,
+                          cellstate_data = cellstate_data,
+                          prolif_mat = prolif_mat)
+    
+    
+    # Compute error as difference in cell count between actual and markov output
+    
+    obs <- cellstate_data %>%
+      ungroup() %>%
+      filter(elapsed %in% markov_list[[1]]$elapsed) %>%
+      arrange(elapsed) %>%
+      dplyr::select(-elapsed)
+    
+    if(!include_death){
+        error_list <- future.apply::future_lapply(X = markov_list,
+                         FUN = function(x){
+                           
+                           exp <- x %>% 
+                             arrange(elapsed) %>%
+                             dplyr::select(-elapsed)
+                           
+                           error_out <- rmsre_by_col(obs = obs, exp = exp)
+                           
+                           return(error_out)})
+       
+    }else{
+      
+        obs <- obs %>%
+          dplyr::select(-dead)
+        error_list <- future.apply::future_lapply(X = markov_list,
+                         FUN = function(x){
+                           
+                           exp <- x %>% 
+                             arrange(elapsed) %>%
+                             dplyr::select(-elapsed, -dead)
+                           
+                           tf_live <- sum(exp[nrow(exp),]) # Number of live cells at final timepoint
+                           tf_dead <- x %>% # Number of dead cells at final timepoint
+                             filter(elapsed == max(elapsed)) %>%
+                             dplyr::select(dead) %>%
+                             pull()
+                           
+                           death_penalty_modifier <- (tf_live + tf_dead*death_weight)/tf_live
+                           
+                           rmsre_by_col(obs = obs, exp = exp)*death_penalty_modifier})
+    } 
+    
+  
+    
+    # Summarize error as the sum of absolute difference
+    
+      error <- unlist(error_list)
+    
+        
+      best_performing <- which(rank(error) <= n_best_perm) # Identify best performing matrices
+      
+      
+      best_transitions <- list()
+      for(i in 1:length(best_performing)){
+        best_transitions[[i]] <- transition_list[[best_performing[i] ]]
+      }
+        
+      # error <- future.apply::future_lapply(X = error_list,
+      #      FUN = function(x){sum(x %>% abs() %>% rowSums()*(1+log10(seq(from = 1, to = final_weight, length.out = nrow(x)))))})
+    
+  
+  
+    
+    # Identify the best transition rate matrix (lowest error)
+    best_transition <- transition_list[[which.min(error)]]
+    
+    
+    # Stash results from best run into list
+    epoch_list[[epoch]] <- list(best_transition = best_transition,
+                                error = min(unlist(error)),
+                                markov_output = markov_list[[which.min(error)]])
+    
+    # Stash error and n_epoch into tibble
+    curr_epoch <- tibble(epoch = epoch,
+                         error = min(unlist(error)))
+    if(epoch == 1){
+      epoch_tibble <- curr_epoch
+    }else{
+      epoch_tibble <- rbind(epoch_tibble,
+                            curr_epoch)
+    }
+    
+    
+    print(paste0('Lowest error: ', formatC(min(error), format = 'e', digits = 2)))
+    
+    # plots
+    
+    # markov_out_all <- do.call(rbind, markov_list) %>%
+    #   gather(-elapsed, key = 'state', value = 'count')
+    # 
+    # best_out <- markov_list[[which.min(error)]] %>%
+    #   gather(-elapsed, key = 'state', value = 'count')
+    # 
+    # p1 <- ggplot(markov_out_all, aes(x = elapsed, y = count))+
+    #         geom_point(alpha = 0.5, size = 0.5)+
+    #         facet_grid(state~., scales = 'free_y')+
+    #         theme_bw()+
+    #         geom_point(data = curr, aes(y = n_cell_sub), color = 'blue', alpha = 0.5)+
+    #         geom_line(data = best_out, color = 'red', alpha = 0.7, linewidth = 2)+
+    #         ggtitle(paste0('Epoch: ', epoch))
+    # 
+    # epoch_list[[epoch]]$plot <- p1
+    
+    print(round(Sys.time() - start_loop),2)
+  
+    
+    
+  }
+  
+  return(epoch_list)
+  
+  end_time <- Sys.time()
+  print('Total elapsed:')
+  print(end_time - start)
+  
+}
+```
+
+
+# Use function
+
+## Set up
+```{r}
+unique_conditions <- l4_2 %>%
+  dplyr::select(drug, sirna) %>%
+  distinct()
+
+# Read in proliferation matrix
+if(!file.exists('proliferation_matrix_phase_multi9.csv')){
+  write_csv(as_tibble(mat_seed), 'proliferation_matrix.csv')
+}else{
+  prolif_mat <- read_csv('proliferation_matrix_phase_multi9.csv') %>%
+    as.matrix()
+  
+  rownames(prolif_mat) <- colnames(prolif_mat)
+}
+```
+
+## Apply function
+
+```{r, fig.asp = 1}
+for(k in 1:nrow(unique_conditions)){
+  curr_condition <- unique_conditions[k,]
+  
+  curr_nickname <- paste0(curr_condition$sirna, '_', curr_condition$drug)
+  
+  print(paste('Current condition:', curr_condition$sirna, ' + ', curr_condition$drug))
+  
+  
+  include_death <- FALSE
+
+  curr <- l4_2 %>%
+    filter(drug == curr_condition$drug & sirna == curr_condition$sirna) %>%
+    mutate(state = phase_multi) %>%
+    mutate(state = ifelse(phase == 'M', 'M', ifelse(multinucleated, 'multi', paste0(phase, '_mono')))) %>%
+    ungroup() %>%
+    group_by(elapsed, state) %>%
+    summarize(n_cell_sub = sum(n_cell_sub)) %>%
+    ungroup() 
+  
+  # Fill in any missing timepoints with zero (ensures roll_mean fills in those values and prevents rmsre errors)
+  curr_zeroes <- expand.grid(elapsed = unique(curr$elapsed), state = unique(curr$state)) %>%
+    as_tibble() %>%
+    mutate(n_cell_sub = 0) %>%
+    mutate(elapsed_state = paste(elapsed, state, sep = '_')) %>%
+    filter(!elapsed_state %in% paste(curr$elapsed, curr$state, sep = '_')) %>%
+    dplyr::select(-elapsed_state)
+  
+  curr <- rbind(curr, curr_zeroes) %>%
+    arrange(elapsed) %>%
+    group_by(state) %>%
+    mutate(roll_mean = data.table::frollmean(n_cell_sub, n = 5))
+  
+  ggplot(curr, aes(x = elapsed, y = n_cell_sub, color = state))+
+    geom_point()+
+    geom_line(aes(x = elapsed, y = roll_mean, color = state))+
+    geom_vline(xintercept = 24)+
+    ggtitle(curr_nickname)
+  
+  states <- unique(curr$state)
+  
+  cellstate_data <- curr %>%
+    mutate(counts = roll_mean)  %>%
+    filter(!is.na(counts)) %>%
+    filter(elapsed >= 0 & elapsed %in% seq(from = 0, to = 96, by = 1)) %>%
+    dplyr::select(elapsed, counts, state) %>%
+    mutate(state = factor(state, levels = states)) %>%
+    group_by(elapsed) %>%
+    spread(key = state, value = counts, fill = 0)
+  
+  if(include_death){
+    states <- c(states, 'dead')
+    cellstate_data <- cellstate_data %>%
+      mutate(dead = 0)
+  }
+  
+  prolif_mat <- prolif_mat[colnames(prolif_mat) %in% states, colnames(prolif_mat) %in% states]
+  
+  epoch_out <- solve_markov_states(cellstate_data = cellstate_data,
+                                   prolif_mat = prolif_mat,
+                                   include_death = include_death,
+                                   death_weight = 1,
+                                   n_per_epoch = 5000,
+                                   n_epoch = 12,
+                                   annealing_rate = 2,
+                                   learning_rate = 0.2,
+                                   n_best_perm = 5)
+  
+  error_tibble <- tibble(epoch = 1:length(epoch_out),
+                         error = unlist(lapply(epoch_out, '[', 2)))
+  
+  error_plot <- ggplot(error_tibble, aes(x = epoch, y = error))+
+    geom_point()+
+    theme_bw()+
+    ggtitle(paste0(curr_nickname, ' error'))
+  
+  print(error_plot)
+  
+  
+  for(i in seq(from = 1, to = min(length(epoch_out), 50), by = 1)){
+    markov_gathered <- epoch_out[[i]]$markov_output %>%
+    gather(-elapsed, key = 'state', value = 'n_cell_sub')
+  
+    curr_combined <- full_join(x = curr,
+                               y = markov_gathered,
+                               by = c('elapsed', 'state'),
+                               suffix = c('', '.markov'))
+    
+    p1 <- ggplot(curr_combined, aes(x = elapsed))+
+      geom_point(aes(y = n_cell_sub, color = 'real'))+
+      geom_point(aes(y = n_cell_sub.markov, color = 'markov'))+
+      facet_grid(state~., scales = 'free_y')+
+      theme_bw()+
+      ggtitle(paste0(curr_nickname, '\n Epoch: ', i))
+    
+    print(p1)
+  }
+  
+  
+  saveRDS(epoch_out, file = paste0(curr_nickname, '_markov.rds'))
+}
+```
+
+# TM matrix
+
+```{r, eval = FALSE}
+markov_dir <- ''
+
+m_files <- list.files(path = markov_dir, pattern = '*_markov.rds')
+
+
+m_list <- list()
+for(i in 1:length(m_files)){
+  temp <- readRDS(paste0(markov_dir, m_files[i]))
+  
+  temp_bt <- temp[[length(temp)]]$best_transition %>%
+    as_tibble() %>%
+    mutate(prior = colnames(.)) %>%
+    gather(-prior, key = 'post', value = 'transition_rate') %>%
+    mutate(file = m_files[i]) %>%
+    mutate(sirna = str_split(file, pattern = '_', simplify = TRUE)[,1],
+           drug = str_split(file, pattern = '_', simplify = TRUE)[,2])
+  
+  m_list[[i]] <- temp_bt
+  
+}
+
+m_tib0 <- do.call(rbind, m_list) %>%
+  mutate(transition = paste0(prior, ' -> ', post)) %>%
+  mutate(sirna_drug = paste0(sirna, '_', drug))
+
+m_tib <- m_tib0 %>%
+  filter(prior != post)
+
+m_spread <- m_tib %>%
+  dplyr::select(transition_rate, transition, sirna_drug) %>%
+  spread(key = sirna_drug, value = transition_rate)
+
+m_df <- data.frame(m_spread[,-1],
+                   row.names = m_spread$transition)
+
+m_filt <- m_df[rowSums(m_df) > 0 ,]
+
+col_anno <- m_tib %>%
+  dplyr::select(drug, sirna_drug) %>%
+  distinct() %>%
+  data.frame(., row.names = 'sirna_drug')
+
+pheatmap::pheatmap(m_filt,
+                   display_numbers = round(m_filt, digits = 2),
+                   scale = 'row',
+                   annotation_col = col_anno,
+                   cluster_rows = FALSE)
+```
+
+# Expected duration
+
+```{r, eval = FALSE}
+trans_id <- m_tib0 %>%
+  filter(prior == post) %>%
+  filter(transition_rate != 1) %>%
+  mutate(expected_duration = log(0.5, base = transition_rate),
+         exp_1q = log(0.25, base = transition_rate),
+         exp_3q = log(0.75, base = transition_rate)) %>%
+  mutate(condition = sirna_drug) %>%
+  mutate(state = prior)
+
+condition_order <- trans_id %>%
+  group_by(condition) %>%
+  summarize(sum_exp_dur = sum(expected_duration)) %>%
+  arrange(sum_exp_dur) %>%
+  dplyr::select(condition) %>%
+  pull()
+
+trans_id$condition <- factor(trans_id$condition,
+                             levels = condition_order)
+
+ggplot(trans_id, aes(x = condition, y = expected_duration, fill = state))+
+  geom_col()+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  ylab('Expected Duration (hours)')+
+  xlab('Condition')
+
+```
+
+# Move files
+
+```{r, eval = FALSE}
+mask_dir <- 'F:/calistri_incucyte/230419_nlc_sirna_1nMPTX_15min/masks_cyto/'
+cyto_dir <- 'F:/calistri_incucyte/230419_nlc_sirna_1nMPTX_15min/single_tifs/green/'
+
+mask_target <- 'C:/Users/calistri/Desktop/trackmate_test/masks/'
+cyto_target <- 'C:/Users/calistri/Desktop/trackmate_test/green/'
+
+# Pull masks
+mask_files <- list.files(mask_dir)
+
+mask_meta <- mask_files %>%
+  str_split(pattern = '_', simplify = TRUE) %>%
+  as_tibble()
+
+colnames(mask_meta) <- c('date', 'time', 'well', 'field', 'cellpose', 'suffix')
+
+mask_meta <- mask_meta %>%
+  mutate(file = mask_files)
+
+# Pull cytoplasmic images
+cyto_files <- list.files(cyto_dir)
+
+cyto_meta <- cyto_files %>%
+  str_split(pattern = '_', simplify = TRUE) %>%
+  as_tibble()
+
+colnames(cyto_meta) <- c('date', 'time', 'well', 'field', 'suffix')
+
+cyto_meta <- cyto_meta %>%
+  mutate(file = cyto_files)
+
+# filter to first 50 images of well B4 field 1
+mask_filt <- mask_meta %>%
+  filter(well == 'C4' & field == 1) %>%
+  slice_head(n = 150)
+
+cyto_filt <- cyto_meta %>%
+  filter(well == 'C4' & field == 1) %>%
+  slice_head(n = 150)
+
+# Copy to target folder
+
+file.copy(from = paste0(mask_dir, mask_filt$file),
+          to = paste0(mask_target, mask_filt$file))
+
+file.copy(from = paste0(cyto_dir, cyto_filt$file),
+          to = paste0(cyto_target, cyto_filt$file))
+
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

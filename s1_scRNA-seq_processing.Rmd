@@ -1,0 +1,544 @@
+---
+title: "s1_240327_pac-ligand_preprocessing"
+author: "nlc"
+date: "3/27/2024"
+output:
+  rmdformats::downcute:
+      self_contained: true
+      highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = 'center', out.width = "90%", fig.asp = 0.52)
+```
+
+# Set up
+
+## Load libraries
+```{r}
+library(tidyverse)
+library(Seurat)
+library(cluster)
+```
+
+## Set QC thresholds
+
+```{r}
+min_features <- 3000
+max_mt <- 25
+```
+
+# Ingest data from cellranger output
+
+```{r}
+ligand_data_folder <- '../2020_dream_scRNAseq/data/ligand_realigned/filtered_feature_bc_matrix/'
+
+pac_data_folder <- '../2020_dream_scRNAseq/data/paclitaxel_realigned'
+
+data_dirs <- list.dirs(pac_data_folder,
+                       recursive = FALSE)
+
+data_dirs <- c(paste0(data_dirs, '/filtered_feature_bc_matrix/'), ligand_data_folder)
+
+seurat_list <- list()
+
+for(i in 1:length(data_dirs)){
+  
+  split_dir_name <- str_split(data_dirs[i], pattern = '/', simplify = TRUE)
+  
+  curr_folder <- paste(c(split_dir_name[,(ncol(split_dir_name)-3):ncol(split_dir_name)]), collapse = '/')
+    
+  print(paste0('Loading and computing stats for folder: ', curr_folder))
+  
+  orig <- Read10X(data_dirs[i])
+  
+  if(length(orig) != 2){
+    seurat_list[[i]] <- CreateSeuratObject(orig, project = curr_folder)
+  }else if(length(orig) == 2){
+    so.hashtag <- CreateSeuratObject(orig$`Gene Expression`, project = curr_folder)
+    so.hashtag[['HTO']] <- CreateAssayObject(counts = orig$`Antibody Capture`)
+    seurat_list[[i]] <- so.hashtag
+    orig <- orig$`Gene Expression`
+  }
+  
+  dim(orig)
+  
+  # Convert count matrix to binary, (any counts >0) <- 1
+  binary <- orig > 0
+  
+  # of cells per gene
+  hist(rowSums(binary))
+  
+  # of genes per cell
+  hist(colSums(binary))
+  
+  # Filter the matrix to remove any genes where no counts were captured across any cells
+  binary_filtered <- binary[rowSums(binary) != 0,]
+  
+  dim(binary_filtered)
+  
+  # Compute % drop out
+  
+  1 - (sum(binary_filtered) / (dim(binary_filtered)[1] * dim(binary_filtered)[2]))
+  
+  
+  # Define QC matrics
+  orig_genes <- nrow(orig)
+  orig_cells <- ncol(orig)
+  orig_zeros <- sum(orig == 0)
+  orig_nonzeros <- sum(orig > 0)
+  orig_negatives <- sum(orig < 0)
+  filter_genes <- nrow(binary_filtered)
+  filter_representation <- sum(binary_filtered)
+  filter_dropout <- sum(binary_filtered == 0)
+  filter_percent_dropout <- sum(binary_filtered == 0 )/ (nrow(binary_filtered) * ncol(binary_filtered))
+  filter_ave_genes <- mean(colSums(binary_filtered))
+  mean_umi <- mean(colSums(orig))
+  
+  curr_qc_stats <- tibble(condition = str_split(curr_folder, pattern = '/', simplify = TRUE)[,2],
+                         orig_genes,
+                         orig_cells,
+                         orig_zeros,
+                         orig_nonzeros,
+                         orig_negatives,
+                         filter_genes,
+                         filter_representation,
+                         filter_dropout,
+                         filter_percent_dropout,
+                         filter_ave_genes,
+                         mean_umi)
+  
+  if(i == 1){
+    qc_stats <- curr_qc_stats
+  } else{
+    qc_stats <- rbind(qc_stats,
+                      curr_qc_stats)
+  }
+}
+
+knitr::kable(t(qc_stats))
+```
+
+# Paclitaxel analysis
+
+## Merge files and update metadata
+
+```{r}
+so_pac <- merge(x = seurat_list[[1]],
+                y = c(seurat_list[[2]], seurat_list[[3]], seurat_list[[4]]))
+
+# Update metadata
+
+so_pac@meta.data$treatment <- str_split(string = so_pac@meta.data$orig.ident,
+                                        pattern = '/',
+                                        simplify = TRUE)[,2]
+
+# Rename treatment values and set as Idents
+treatment_tibble <- tibble(library = c('LH2400_realigned', 'LH7200_realigned', 'LH2401_realigned', 'LH7201_realigned'),
+                           treatment = c('DMSO_24', 'DMSO_72', 'PTX_24', 'PTX_72'))
+so_pac@meta.data$treatment <- plyr::mapvalues(x = so_pac@meta.data$treatment,
+                                              from = treatment_tibble$library,
+                                              to = treatment_tibble$treatment)
+
+Idents(so_pac) <- 'treatment'
+```
+
+## Quality control and filter to just high quality cells
+
+```{r}
+# Assign percent.{mt,ribo}
+so_pac[['percent.mt']] <- PercentageFeatureSet(so_pac, pattern = '^MT-')
+so_pac[['percent.ribo']] <- PercentageFeatureSet(so_pac, pattern = '^RP[SL][[:digit:]]')
+
+VlnPlot(so_pac, features = c('nFeature_RNA', 'nCount_RNA', 'percent.mt', 'percent.ribo'), ncol = 4)
+
+p1 <- FeatureScatter(so_pac, feature1 = 'nCount_RNA', feature2 = 'percent.mt')+
+  geom_hline(yintercept = max_mt)
+p2 <- FeatureScatter(so_pac, feature1 = 'nCount_RNA', feature2 = 'nFeature_RNA')+
+  geom_hline(yintercept = min_features)
+
+gridExtra::grid.arrange(p1,p2, ncol = 2)
+
+# Filter data based on QC metrics
+
+so_pac_failqc <- subset(so_pac,
+                        subset = nFeature_RNA <= min_features | percent.mt >= max_mt)
+
+so_pac <- subset(so_pac,
+                 subset = nFeature_RNA > min_features & percent.mt < max_mt)
+
+n_removed <- table(so_pac_failqc$treatment)
+n_kept <- table(so_pac$treatment)
+
+knitr::kable(rbind(n_removed, n_kept))
+```
+
+## Standard normalization and dimensionality reduction
+
+```{r}
+so_pac <- NormalizeData(so_pac,
+                    normalization.method = 'LogNormalize',
+                    scale.factor = 1e4)
+
+so_pac <- FindVariableFeatures(so_pac,
+                           selection.method = 'vst',
+                           nFeatures = 2000)
+
+top20 <- head(VariableFeatures(so_pac), 20)
+
+p1 <- VariableFeaturePlot(so_pac)
+p2 <- LabelPoints(plot = p1,
+                  points = top20,
+                  repel = TRUE)
+
+print(p1)
+print(p2)
+
+so_pac <- ScaleData(so_pac,
+                features = rownames(so_pac))
+
+# Dimensionality reduction
+so_pac <- RunPCA(so_pac,
+             features = VariableFeatures(so_pac))
+
+
+DimPlot(so_pac, reduction = 'pca')
+
+DimHeatmap(so_pac, dims = 1, cells = 500, balanced = TRUE)
+
+ElbowPlot(so_pac, ndims = 50)
+
+so_pac <- RunUMAP(so_pac, dims = 1:10)
+DimPlot(so_pac)
+
+# Clustering
+so_pac <- FindNeighbors(so_pac, dims = 1:10)
+so_pac <- FindClusters(so_pac)
+
+DimPlot(so_pac, reduction = 'pca')+
+  coord_equal()
+
+# Visualization
+DimPlot(so_pac,
+        label = TRUE)+
+  coord_equal()
+
+DimPlot(so_pac,
+        label = TRUE,
+        group.by = 'treatment')+
+  coord_equal()
+
+FeaturePlot(so_pac,
+            feature = 'percent.ribo')+
+  coord_equal()
+
+FeaturePlot(so_pac,
+            feature = 'percent.mt')+
+  coord_equal()
+```
+
+## Cell cycle assignment
+
+```{r}
+so_pac <- CellCycleScoring(so_pac,
+                           s.features = cc.genes$s.genes,
+                           g2m.features = cc.genes$g2m.genes)
+
+cluster_phase_freq <- so_pac@meta.data %>%
+  dplyr::select(seurat_clusters, Phase) %>%
+  table()
+
+cluster_treatment_freq <- so_pac@meta.data %>%
+  dplyr::select(seurat_clusters, treatment) %>%
+  table()
+
+pheatmap::pheatmap(cluster_phase_freq,
+                   display_numbers = TRUE,
+                   main = paste0('NMI: ', aricode::NMI(c1 = so_pac@meta.data$seurat_clusters,
+                                                       c2 = so_pac@meta.data$Phase)))
+
+pheatmap::pheatmap(cluster_treatment_freq,
+                   display_numbers = TRUE,
+                   main = paste0('NMI: ', aricode::NMI(c1 = so_pac@meta.data$seurat_clusters,
+                                                       c2 = so_pac@meta.data$Phase)))
+
+
+ggplot(so_pac@meta.data, aes(x = treatment, fill = Phase))+
+  geom_bar(position = 'dodge')+
+  facet_wrap(~seurat_clusters)+
+  RotatedAxis()
+```
+
+## Save RDS
+
+```{r}
+saveRDS(so_pac,
+        file = 'analysis_objects/240327_so_pac.rds')
+```
+
+# Ligand analysis
+
+## Demultiplex HTOs
+```{r}
+# Pull the HTO multiplexed experiment (hard coded for last one)
+so_ligand <- seurat_list[[5]]
+
+# CLR normalize HTO counts and demultiplex
+so_ligand <- NormalizeData(so_ligand, assay = 'HTO', normalization.method = 'CLR')
+so_ligand <- HTODemux(so_ligand, assay = 'HTO', positive.quantile = 0.99)
+
+# Visualize HTO CLR normalized expression versus assignment
+RidgePlot(so_ligand,
+          assay = 'HTO',
+          features = rownames(so_ligand[['HTO']]),
+          ncol = 2)
+
+# Compare UMI versus HTO based doublet calling
+VlnPlot(so_ligand,
+        features = 'nCount_RNA',
+        pt.size = 0.1,
+        log = TRUE,
+        group.by = 'HTO_classification.global')
+
+# Recode hash.ID to known condition
+so_ligand@meta.data$condition <- recode(.x = so_ligand@meta.data$hash.ID,
+                                        `TotalSeq-A-0252-2` = 'PBS',
+                                        `TotalSeq-A-0253-3` = 'NOTCHi',
+                                        `TotalSeq-A-0254-4` = 'NOTCHi_IFNB',
+                                        `TotalSeq-A-0255-5` = 'IFNB',
+                                       `TotalSeq-A-0256-6` = 'IFNG',
+                                        `TotalSeq-A-0257-7` = 'TGFB',
+                                        `TotalSeq-A-0258-8` = 'LTA',
+                                        `TotalSeq-A-0259-9` = 'OSM')
+
+Idents(so_ligand) <- 'condition'
+#  Rewrite HTO demultiplexed seurat object to the list of experiments
+seurat_list[[5]] <- so_ligand
+
+so_ligand@meta.data %>%
+  group_by(condition) %>%
+  summarize(n_cells = n(),
+            mean_RNA_umi = mean(nCount_RNA),
+            mean_HTO_umi = mean(nCount_HTO)) %>%
+  knitr::kable()
+```
+
+## Quality control and filter to just high quality cells
+
+```{r}
+# Assign percent.{mt,ribo}
+so_ligand[['percent.mt']] <- PercentageFeatureSet(so_ligand, pattern = '^MT-')
+so_ligand[['percent.ribo']] <- PercentageFeatureSet(so_ligand, pattern = '^RP[SL][[:digit:]]')
+
+VlnPlot(so_ligand, features = c('nFeature_RNA', 'nCount_RNA', 'percent.mt', 'percent.ribo'), ncol = 4)
+
+p1 <- FeatureScatter(so_ligand, feature1 = 'nCount_RNA', feature2 = 'percent.mt')+
+  geom_hline(yintercept = max_mt)
+p2 <- FeatureScatter(so_ligand, feature1 = 'nCount_RNA', feature2 = 'nFeature_RNA')+
+  geom_hline(yintercept = min_features)
+
+gridExtra::grid.arrange(p1,p2, ncol = 2)
+
+# Filter data based on QC metrics
+
+so_ligand_failqc <- subset(so_ligand,
+                        subset = nFeature_RNA <= min_features | percent.mt >= max_mt | condition %in% c('Doublet', 'Negative'))
+
+so_ligand <- subset(so_ligand,
+                 cells = colnames(so_ligand)[!colnames(so_ligand) %in% colnames(so_ligand_failqc)])
+
+n_removed <- table(so_ligand_failqc$condition)
+n_kept <- table(so_ligand$condition)
+
+knitr::kable(rbind(n_removed, n_kept))
+```
+
+## Standard normalization and dimensionality reduction
+
+```{r}
+so_ligand <- NormalizeData(so_ligand,
+                    normalization.method = 'LogNormalize',
+                    scale.factor = 1e4)
+
+so_ligand <- FindVariableFeatures(so_ligand,
+                           selection.method = 'vst',
+                           nFeatures = 2000)
+
+top20 <- head(VariableFeatures(so_ligand), 20)
+
+p1 <- VariableFeaturePlot(so_ligand)
+p2 <- LabelPoints(plot = p1,
+                  points = top20,
+                  repel = TRUE)
+
+print(p1)
+print(p2)
+
+so_ligand <- ScaleData(so_ligand,
+                features = rownames(so_ligand))
+
+# Dimensionality reduction
+so_ligand <- RunPCA(so_ligand,
+             features = VariableFeatures(so_ligand))
+
+
+DimPlot(so_ligand, reduction = 'pca')
+
+DimHeatmap(so_ligand, dims = 1, cells = 500, balanced = TRUE)
+
+ElbowPlot(so_ligand, ndims = 50)
+
+so_ligand <- RunUMAP(so_ligand, dims = 1:10)
+DimPlot(so_ligand)
+
+# Clustering
+so_ligand <- FindNeighbors(so_ligand, dims = 1:10)
+so_ligand <- FindClusters(so_ligand)
+
+DimPlot(so_ligand, reduction = 'pca')+
+  coord_equal()
+
+# Visualization
+DimPlot(so_ligand,
+        label = TRUE)+
+  coord_equal()
+
+DimPlot(so_ligand,
+        label = TRUE,
+        group.by = 'condition')+
+  coord_equal()
+
+FeaturePlot(so_ligand,
+            feature = 'percent.ribo')+
+  coord_equal()
+
+FeaturePlot(so_ligand,
+            feature = 'percent.mt')+
+  coord_equal()
+```
+
+## Cell cycle assignment
+
+```{r}
+so_ligand <- CellCycleScoring(so_ligand,
+                           s.features = cc.genes$s.genes,
+                           g2m.features = cc.genes$g2m.genes)
+
+cluster_phase_freq <- so_ligand@meta.data %>%
+  dplyr::select(seurat_clusters, Phase) %>%
+  table()
+
+cluster_condition_freq <- so_ligand@meta.data %>%
+  dplyr::select(seurat_clusters, condition) %>%
+  table()
+
+pheatmap::pheatmap(cluster_phase_freq,
+                   display_numbers = TRUE,
+                   main = paste0('NMI: ', aricode::NMI(c1 = so_ligand@meta.data$seurat_clusters,
+                                                       c2 = so_ligand@meta.data$Phase)))
+
+pheatmap::pheatmap(cluster_condition_freq,
+                   display_numbers = TRUE,
+                   main = paste0('NMI: ', aricode::NMI(c1 = so_ligand@meta.data$seurat_clusters,
+                                                       c2 = so_ligand@meta.data$Phase)))
+
+
+ggplot(so_ligand@meta.data, aes(x = seurat_clusters, fill = Phase))+
+  geom_bar(position = 'dodge')+
+  facet_wrap(~condition)+
+  RotatedAxis()
+```
+
+
+## Save RDS
+```{r}
+saveRDS(so_ligand,
+        file = 'analysis_objects/240327_so_ligand.rds')
+```
+
+# DEG versus time matched control
+
+```{r}
+if(! file.exists('analysis_objects/240328_pac_ligand_degs.csv')){
+  
+  print('Previously computed DEG.csv file not found')
+  # Paclitaxel DEG
+  Idents(so_pac) <- 'treatment'
+  
+  pac24.markers <- FindMarkers(so_pac,
+                       ident.1 = 'PTX_24',
+                       ident.2 = 'DMSO_24',
+                       logfc.threshold = 0,
+                       min.pct = 0)  %>%
+      mutate(gene = rownames(.)) %>%
+      mutate(ident.1 = 'PTX_24') %>%
+      mutate(ident.2 = 'DMSO_24') %>%
+      mutate(p_val_bh = stats::p.adjust(p_val, method = 'BH'))
+  
+  pac72.markers <- FindMarkers(so_pac,
+                       ident.1 = 'PTX_72',
+                       ident.2 = 'DMSO_72',
+                       logfc.threshold = 0,
+                       min.pct = 0)  %>%
+      mutate(gene = rownames(.)) %>%
+      mutate(ident.1 = 'PTX_72') %>%
+      mutate(ident.2 = 'DMSO_72') %>%
+      mutate(p_val_bh = stats::p.adjust(p_val, method = 'BH'))
+  
+  dmso72.markers <- FindMarkers(so_pac,
+                       ident.1 = 'DMSO_72',
+                       ident.2 = 'DMSO_24',
+                       logfc.threshold = 0,
+                       min.pct = 0) %>%
+      mutate(gene = rownames(.)) %>%
+      mutate(ident.1 = 'DMSO_72') %>%
+      mutate(ident.2 = 'DMSO_24') %>%
+      mutate(p_val_bh = stats::p.adjust(p_val, method = 'BH'))
+
+  # Find ligand DEGs
+  
+  Idents(so_ligand) <- 'condition'
+  non_pbs_ligands <- unique(so_ligand@meta.data$condition)[!unique(so_ligand@meta.data$condition) == 'PBS']
+  
+  ligand_degs <- list()
+  for(i in non_pbs_ligands){
+    
+    curr_degs <- FindMarkers(so_ligand,
+                       ident.1 = i,
+                       ident.2 = 'PBS',
+                       logfc.threshold = 0,
+                       min.pct = 0) %>%
+      mutate(gene = rownames(.)) %>%
+      mutate(ident.1 = i) %>%
+      mutate(ident.2 = 'PBS') %>%
+      mutate(p_val_bh = stats::p.adjust(p_val, method = 'BH'))
+    
+    ligand_degs[[i]] <- curr_degs
+    
+  }
+  
+  # Combine and store as tibble
+  
+  ligand_deg_tibble <- do.call(rbind, ligand_degs)
+  
+  ptx_deg_tibble <- rbind(pac24.markers,
+                          pac72.markers,
+                          dmso72.markers)
+  
+  all_deg_tibble <- rbind(ligand_deg_tibble,
+                          ptx_deg_tibble)
+  
+  write_csv(all_deg_tibble, 'analysis_objects/240328_pac_ligand_degs.csv')
+
+}else{
+  print('DEG file found - not reprocessing')
+}
+
+```
+
+# sessionInfo()
+
+```{r}
+sessionInfo()
+```
+

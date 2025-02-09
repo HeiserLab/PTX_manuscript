@@ -1,0 +1,5552 @@
+---
+title: "230613_ptx_figures"
+author: "nlc"
+date: "2023-06-13"
+output:
+  rmdformats::downcute:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dpi = 300)
+```
+
+# Set up
+
+## Load libraries
+
+```{r}
+library(tidyverse)
+library(rstatix)
+library(EBImage)
+library(ggpubr)
+library(RColorBrewer)
+```
+
+## Set up figure directory and default plotting theme
+
+```{r}
+fig_dir <- 'figures_tiffs/'
+figure_device <- 'tiff'
+figure_suffix <- '.tiff'
+
+if(!dir.exists(fig_dir)){
+  dir.create(fig_dir)
+}
+
+mytheme <- function(){ 
+    
+    theme_bw() %+replace%    
+    
+    theme(
+      panel.grid.major = element_blank(),
+      plot.title = element_text(size = 10,
+                                hjust = 0,
+                                vjust = 2),
+      plot.subtitle = element_text(size = 8),
+      axis.title = element_text(size = 8),
+      axis.text = element_text(size = 8),
+      legend.margin = margin(0, 0, 0, 0),
+      legend.spacing.x = unit(2, "mm"),
+      legend.spacing.y = unit(2, "mm"))
+}
+
+title_size <- 10
+
+dpi_figures <- 300
+
+# Cell cycle color dictionary
+
+cc_dict <- tibble(phase = c('G1', 'S', 'G2M'),
+                  color = scico::scico(n = 5, palette = 'tokyo')[c(1,3,4)])
+
+# set up color dictionary
+ptx_cols <- tibble(condition = c('DMSO_24', 'DMSO_72', 'PTX_24', 'PTX_72'),
+                   colors = scico::scico(n = 8, palette = 'bam')[c(6,7,3,2)])
+```
+
+
+# New 09/21/24
+
+# Figure 1
+
+## 1A: HCC1143 images
+
+```{r}
+test <- readImage('deps/240901_edu/reference_images/p1_D_08_1.tif')
+
+edu_norm <- normalize(test[,,1])
+dapi_norm <- normalize(test[,,3], inputRange = c(0,0.5))
+
+comb_norm <- rgbImage(red = edu_norm, blue = dapi_norm)
+
+test_seg <- round(readImage('deps/240901_edu/reference_images/cyto_masks/p1_D_08_1_cp_masks.tif')*2^16,0)
+
+display(paintObjects(test_seg, comb_norm, col = '#ffffff', opac = c(0.25,0)))
+
+bounds <- 150
+x_cent <- 700
+y_cent <- 1200
+
+curr <- paintObjects(test_seg, comb_norm, col = '#ffffff', opac = c(0.25,0))[(x_cent-bounds):(x_cent+bounds), (y_cent-bounds):(y_cent+bounds), ]
+
+
+```
+
+##
+
+```{r, fig.asp = 0.75}
+f1_img_meta <- read_csv('deps/240901_edu/240901_image_meta.csv') %>%
+  arrange(perturb, concentration)
+
+# Use 1st/99th quantile of DMSO for normalization
+ctrl_rgb <- readImage('deps/240901_edu/reference_images/p1_D_11_4.tif')
+edu_thresh <- quantile(ctrl_rgb[,,1], c(0.01, 0.99))
+cellmask_thresh <- quantile(ctrl_rgb[,,2], c(0.01, 0.99))
+dapi_thresh <- quantile(ctrl_rgb[,,3], c(0.01, 0.99))
+
+# XY window bounds around target pixel
+bounds <- 150
+
+img_list <- list()
+for(i in f1_img_meta$filename){
+  # subset metadata
+  curr_meta <- f1_img_meta %>%
+    filter(filename == i)
+  
+  # define x and y coordinates
+  x_coords <- (curr_meta$x - bounds):(curr_meta$x + bounds)
+  y_coords <- (curr_meta$y - bounds):(curr_meta$y + bounds)
+  
+  # Read images
+  curr_rgb <- readImage(paste0('deps/240901_edu/reference_images/', i, '.tif'))
+  curr_mask <- readImage(paste0('deps/240901_edu/reference_images/cyto_masks/', i, '_cp_masks.tif'))
+  
+  # Normalize
+  edu_norm <- normalize(curr_rgb[,,1], inputRange = edu_thresh)
+  cellmask_norm <- normalize(curr_rgb[,,2], inputRange = cellmask_thresh)*0.75
+  dapi_norm <- normalize(curr_rgb[,,3], inputRange = dapi_thresh)
+  
+  # Combine and add mask layer
+  norm_rgb <- rgbImage(red = edu_norm,
+                       green = cellmask_norm,
+                       blue = dapi_norm)
+  
+  norm_masked <- paintObjects(curr_mask, norm_rgb, opac = c(0.75, 0), col = 'magenta')
+
+  # Stash in list
+  
+  img_list[[i]]$raw <- curr_rgb
+  img_list[[i]]$norm <- norm_rgb
+  img_list[[i]]$norm_masked <- norm_masked
+  
+  # Create vertical stack for figure
+  
+  edu_masked <- paintObjects(curr_mask, rgbImage(red = edu_norm, green = edu_norm, blue = edu_norm), opac = c(1,0), col = 'magenta')
+  dapi_masked <- paintObjects(curr_mask, rgbImage(red = dapi_norm, green = dapi_norm, blue = dapi_norm), opac = c(1,0), col = 'magenta')
+  
+  vert_stack <- EBImage::abind(norm_rgb[x_coords, y_coords, ] %>%
+                                 EBImageExtra::drawROI(),
+                                             edu_masked[x_coords, y_coords, ] %>%
+                                 EBImageExtra::drawROI(),
+                                             dapi_masked[x_coords, y_coords, ] %>%
+                                 EBImageExtra::drawROI(),
+                                             along = 2)
+  
+  img_list[[i]]$vert_stack <- vert_stack
+  
+  if(i == f1_img_meta$filename[1]){
+    f1a <- img_list[[i]]$vert_stack
+  }else{
+    f1a <- abind(f1a,
+                 img_list[[i]]$vert_stack,
+                 along = 1)
+  }
+
+}
+
+tiff(filename = paste0(fig_dir, 'figure_1a', figure_suffix), 
+     res = dpi_figures,
+     height = 3.5,
+     width = 4.5,
+     units = 'in')
+
+display(f1a, method = 'raster', margin = 75)
+
+text(y = -25,
+        x = c(150 + 0:3*bounds*2),
+        label = c('DMSO', '0.11nM PTX', '1nM PTX', '9nM PTX'),
+        cex = 1,
+        col = 'black',
+        adj = c(0.5,0.5),
+     srt = 0,
+     offset = 0)
+
+text(y = c(150+0:2*bounds*2),
+        x = -35,
+        label = c('Merged', 'EdU', 'DAPI'),
+        cex = 1,
+        col = c('black', 'red', 'blue'),
+        adj = c(0.5,0.5),
+     srt = 90,
+     offset = 0)
+
+EBImageExtra::scaleBar(x = 60,
+         y = 250,
+         pixels = 30.77,
+         distance = 10,
+         lwd = 3,
+         cex = 0.5,
+         adj = c(0.5, -0.25))
+
+dev.off()
+
+```
+
+
+## 1B: Cell count and fraction multinucleated
+
+```{r}
+# Read incucyte data
+platemap <- read_csv('deps/240829_incucyte_data/240829_incucyte_platemaps.csv') %>%
+  mutate(perturb_string = paste0(concentration, ' ', conc_unit, ' ', perturb),
+         exp_set = ifelse(perturb %in% c('PTX', 'DMSO'), 1, 2))
+
+p2_phase <- read_delim('deps/240829_incucyte_data/240829_plate2_phase_confluency.txt', skip = 1) %>%
+  janitor::clean_names()
+
+p2_red <- read_delim('deps/240829_incucyte_data/240829_plate2_red_area.txt', skip = 1) %>%
+  janitor::clean_names()
+
+p2_redgreen <- read_delim('deps/240829_incucyte_data/240829_plate2_redgreen_area.txt', skip = 1) %>%
+  janitor::clean_names()
+
+p3_phase <- read_delim('deps/240829_incucyte_data/240829_plate3_phase_confluency.txt', skip = 1) %>%
+  janitor::clean_names()
+
+p3_red <- read_delim('deps/240829_incucyte_data/240829_plate3_red_area.txt', skip = 1) %>%
+  janitor::clean_names()
+
+p3_redgreen <- read_delim('deps/240829_incucyte_data/240829_plate3_redgreen_area.txt', skip = 1) %>%
+  janitor::clean_names()
+
+# Parse and combine data
+
+parse_letters <- function(x) { gsub("^([[:alpha:]]*).*$","\\1",x) }
+
+p2_phase <- p2_phase %>%
+  gather(-date_time, -elapsed, key = 'well', value = 'confluency') %>%
+  mutate(column = as.numeric(gsub("[^0-9]", "", well)),
+         row = parse_letters(well) %>% toupper(),
+         plate_format = 'b') %>%
+  left_join(x = .,
+            y = platemap)
+
+p3_phase <- p3_phase %>%
+  gather(-date_time, -elapsed, key = 'well', value = 'confluency') %>%
+  mutate(column = as.numeric(gsub("[^0-9]", "", well)),
+         row = parse_letters(well) %>% toupper(),
+         plate_format = 'a') %>%
+  left_join(x = .,
+            y = platemap)
+
+phase <- rbind(p2_phase,
+               p3_phase)
+
+phase_t0 <- phase %>%
+  filter(elapsed == 0) %>%
+  mutate(confluency_t0 = as.numeric(confluency)) %>%
+  dplyr::select(plate_format, well, confluency_t0)
+
+phase <- left_join(phase,
+                   phase_t0) %>%
+  mutate(confluency_norm = as.numeric(confluency)/confluency_t0)
+
+ggplot(phase, aes(x = elapsed, y = confluency_norm, color = paste0(concentration, ' ', conc_unit, ' ', perturb)))+
+  geom_point()+
+  geom_smooth(se = FALSE)+
+  facet_grid(exp_set~cell_line)
+
+ggplot(phase %>% filter(exp_set == 1), aes(x = elapsed, y = confluency_norm, color = paste0(concentration, ' ', conc_unit, ' ', perturb)))+
+  geom_point()+
+  geom_smooth(se = FALSE)+
+  facet_grid(~cell_line)+
+  labs(color = 'Condition')
+
+# Phase data GRmetrics
+
+phase_ctrl <- phase %>%
+  filter(perturb == 'DMSO' & elapsed == 68) %>%
+  group_by(cell_line) %>%
+  summarize(cell_count__ctrl = mean(confluency_norm))
+
+phase_gr <- phase %>%
+  filter(perturb == 'PTX') %>%
+  mutate(cell_count = confluency_norm,
+         cell_count__time0 = 1,
+         time = elapsed) %>%
+  filter(time == 68) %>%
+  dplyr::select(cell_line, concentration, perturb, well, time, cell_count, cell_count__time0) %>%
+  left_join(x = .,
+            y = phase_ctrl) %>%
+  mutate(manual_gr = 2^(log2(cell_count)/log2(cell_count__ctrl)) - 1)
+
+f1b <- ggplot(phase_gr, aes(x = as.factor(concentration), y = manual_gr, color = cell_line))+
+  geom_hline(yintercept = 0, linetype = 'dashed', alpha = 0.5)+
+  geom_point(alpha = 0.7)+
+  geom_smooth(se = FALSE, aes(group = cell_line))+
+  scale_y_continuous(breaks = seq(-0.2, 1.2, 0.2))+
+  mytheme()+
+  theme(legend.position = 'top',
+        axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(x = 'Paclitaxel Dose (nM)',
+       y = 'Growth Rate',
+       color = '')+
+  ggtitle('1B: Growth rate versus Paclitaxel dose')
+
+f1b
+
+ggsave(filename = paste0(fig_dir, 'figure_1b', figure_suffix),
+       plot = f1b,
+       width = 3.25,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+
+# drc_output <- GRfit(phase_gr, groupingVariables = c('cell_line'))
+# 
+# GRdrawDRC(drc_output)
+
+# Fluor
+
+p2_red <- p2_red %>%
+  gather(-date_time, -elapsed, key = 'well', value = 'red_area')
+
+p2_redgreen <- p2_redgreen %>%
+  gather(-date_time, -elapsed, key = 'well', value = 'redgreen_area')
+
+p3_red <- p3_red %>%
+  gather(-date_time, -elapsed, key = 'well', value = 'red_area')
+
+p3_redgreen <- p3_redgreen %>%
+  gather(-date_time, -elapsed, key = 'well', value = 'redgreen_area')
+
+# Combine
+
+p2_fluor <- full_join(p2_red,
+                      p2_redgreen) %>%
+  mutate(plate_format = 'b')
+
+p3_fluor <- full_join(p3_red,
+                      p3_redgreen) %>%
+  mutate(plate_format = 'a')
+
+fluor <- rbind(p2_fluor, p3_fluor) %>%
+  mutate(column = as.numeric(gsub("[^0-9]", "", well)),
+         row = parse_letters(well) %>% toupper()) %>%
+  left_join(x = .,
+            y = platemap) %>%
+  mutate(viability = 1 - redgreen_area/red_area)
+
+ggplot(fluor %>% filter(perturb == 'PTX'), aes(x = concentration, y = viability, fill = perturb))+
+  geom_point()+
+  facet_grid(.~cell_line, scales = 'free')+
+  geom_hline(data = fluor %>% filter(perturb == 'DMSO'), aes(yintercept = viability))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_x_log10()
+
+fluor <- fluor %>%
+  mutate(red_only_area = red_area - redgreen_area)
+
+ggplot(fluor %>% filter(perturb == 'PTX'), aes(x = concentration, y= red_only_area))+
+  geom_point()+
+  scale_x_log10()+
+  facet_grid(.~cell_line, scales = 'free')+
+  mytheme()+
+  geom_point(aes(x = concentration, y = redgreen_area), color = 'red')
+
+```
+
+## 1C: EdU quantification
+
+```{r}
+f1_l3 <- read_csv('deps/240901_edu/level_3.csv') %>%
+  filter(nuc_s.area_sum > 100 & cyto_s.area > 100 & cyto_s.area < 10000) %>% # Size filters to remove any segmentations that are unlikely to represent valid cells
+  mutate(perturb_string = paste0(perturb, '_', concentration, ifelse(perturb == 'DMSO', '%', 'nM'))) %>%
+  filter(perturb %in% c('DMSO', 'PTX'))
+
+# Order perturbation string
+perturb_string_order <- f1_l3 %>%
+  dplyr::select(perturb, concentration, perturb_string) %>%
+  distinct() %>%
+  arrange(perturb, concentration)
+
+f1_l3$perturb_string <- factor(f1_l3$perturb_string, levels = perturb_string_order$perturb_string)
+f1_l3$concentration_string <- factor(f1_l3$concentration, levels = perturb_string_order$concentration)
+
+ggplot(f1_l3 %>% filter(perturb %in% c('DMSO', 'PTX')), aes(x = nuc_dapi_total_intensity, y = nuc_cy5_total_intensity))+
+  geom_point(alpha = 0.5)+
+  facet_grid(cell_line~perturb_string)+
+  xlim(10,150)+
+  ylim(0,200)+
+  mytheme()+geom_hline(yintercept = 30, color = 'red')+geom_segment(aes(x = 70, y = 0, xend = 70, yend = 30), color = 'red')
+
+edu_thresh <- 10
+dapi_thresh <- c(70,45,55)
+
+# Add EDU status
+f1_l3_hcc1143 <- f1_l3 %>%
+  filter(cell_line == 'HCC1143') %>%
+  mutate(status = ifelse(nuc_cy5_total_intensity > edu_thresh,
+                         'EdU+',
+                         ifelse(nuc_dapi_total_intensity < dapi_thresh[1],
+                                '2N/EdU-',
+                                '4N/EdU-')))
+
+f1_l3_hcc1806 <- f1_l3 %>%
+  filter(cell_line == 'HCC1806') %>%
+  mutate(status = ifelse(nuc_cy5_total_intensity > edu_thresh,
+                         'EdU+',
+                         ifelse(nuc_dapi_total_intensity < dapi_thresh[2],
+                                '2N/EdU-',
+                                '4N/EdU-')))
+
+f1_l3_mdamb468 <- f1_l3 %>%
+  filter(cell_line == 'MDAMB468') %>%
+  mutate(status = ifelse(nuc_cy5_total_intensity > edu_thresh,
+                         'EdU+',
+                         ifelse(nuc_dapi_total_intensity < dapi_thresh[3],
+                                '2N/EdU-',
+                                '4N/EdU-')))
+
+f1_l3_status <- rbind(f1_l3_hcc1143, f1_l3_hcc1806, f1_l3_mdamb468)
+
+# Cell count plot
+
+f1_l3_cellcount <- f1_l3_status %>%
+  group_by(row, concentration_string, perturb, perturb_string, concentration, cell_line, multinucleated) %>%
+  summarize(n_cells = n())
+
+f1_l3_cellcount_ctrl <- f1_l3_cellcount %>%
+  filter(perturb == 'DMSO') %>%
+  group_by(cell_line) %>%
+  summarize(ctrl_mean = sum(n_cells)/3)
+
+f1_l3_cellcount <- left_join(x = f1_l3_cellcount,
+                             y = f1_l3_cellcount_ctrl,
+                             by = 'cell_line')
+
+ggplot(f1_l3_cellcount, aes(x = concentration_string, y = (n_cells/ctrl_mean)/3, fill = multinucleated))+
+  geom_col()+
+  geom_point(aes(y = n_cells/ctrl_mean))+
+  facet_grid(cell_line~perturb, scales = 'free_x', space = 'free_x')+
+  mytheme()+
+  ylab('Normalized Cell count')+
+  scale_y_continuous(breaks = seq(0,1.2, 0.2))
+
+# Summarize and make stacked bar plots
+
+f1_l3_status_sum <- f1_l3_status %>%
+  group_by(perturb_string, perturb, concentration, concentration_string, cell_line, status, multinucleated) %>%
+  summarize(n_stat_mult = n()) %>%
+  group_by(perturb_string, perturb, concentration, concentration_string, cell_line) %>%
+  mutate(frac = n_stat_mult/sum(n_stat_mult))
+
+ggplot(f1_l3_status_sum, aes(x = concentration_string, y = frac, fill = status))+
+  geom_col()+
+  facet_wrap(~cell_line)+
+  mytheme()+
+  ylab('Fraction EdU+')+
+  mytheme()+
+  facet_grid(cell_line~perturb, scales = 'free_x', space = 'free_x')
+
+# Figure 1C : Fraction EDU positive
+
+f1_l3_edu_fraction <- f1_l3_status %>%
+  mutate(replicate = plyr::mapvalues(x = row,
+                                     from = LETTERS[2:7],
+                                     to = c(1,2,3,1,2,3))) %>%
+  dplyr::select(cell_line, replicate, perturb_string, status) %>%
+  table() %>%
+  as_tibble() %>%
+  group_by(cell_line, replicate, perturb_string) %>%
+  mutate(frac = n/sum(n)) %>%
+  filter(status == 'EdU+') %>%
+  mutate(perturb_string = factor(perturb_string, levels = perturb_string_order$perturb_string)) %>%
+  mutate(perturb = str_split(perturb_string, pattern = '_', simplify = TRUE)[,1]) %>%
+  mutate(concentration_string = str_split(perturb_string, pattern = '_', simplify = TRUE)[,2]) %>%
+  mutate(concentration_string = factor(concentration_string, levels = str_split(perturb_string_order$perturb_string, pattern = '_', simplify = TRUE)[,2]))
+
+f1_l3_edu_fraction_mean <- f1_l3_edu_fraction %>%
+  group_by(perturb_string, cell_line, perturb, concentration_string) %>%
+  summarize(mean_frac = mean(frac))
+
+edu_frac_stats <- list()
+
+for(i in unique(f1_l3_edu_fraction$cell_line)){
+  curr_data <- f1_l3_edu_fraction %>%
+    filter(cell_line == i)
+  
+  curr_dunnetts <- DescTools::DunnettTest(frac~perturb_string, data = curr_data)
+  
+  curr_dunnetts_tib <- as_tibble(curr_dunnetts$`DMSO_0.1%`) %>%
+    mutate(cell_line = i) %>%
+    mutate(comparison = row.names(curr_dunnetts$`DMSO_0.1%`)) %>%
+    mutate(ptx_dose = as.numeric(str_remove_all(comparison, pattern = 'PTX_|nM-DMSO_0.1%')))  %>%
+    mutate(p = pval) %>%
+    mutate(manual.sig = ifelse(p >= 0.05,
+                               '',
+                               ifelse(p >= 0.01,
+                                      '*',
+                                      ifelse(p >= 0.001,
+                                             '**',
+                                             '***'))))  %>%
+    mutate(x_pos = 1:nrow(.),
+           y_pos = max(curr_data$frac, na.rm = TRUE)+0.05)
+  
+  edu_frac_stats[[i]] <- curr_dunnetts_tib
+}
+
+edu_frac_stats_tib <- do.call(rbind, edu_frac_stats) %>%
+  mutate(concentration_string = paste0(ptx_dose, 'nM'),
+         perturb = 'PTX')
+
+f1c <- ggplot(f1_l3_edu_fraction, aes(x = concentration_string, y = frac, fill = concentration_string))+
+  geom_col(data = f1_l3_edu_fraction_mean, aes(y = mean_frac), color = 'black', width = 0.6)+
+  geom_point(size = 1.5, shape = 21, color = 'black', fill = 'white', alpha = 0.5)+
+  facet_grid(cell_line~perturb, scales = 'free_x', space = 'free_x')+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'none',
+        strip.text.y = element_text(size = 6),
+        strip.text.x = element_text(size = 6))+
+  geom_text(data = edu_frac_stats_tib, aes(x = concentration_string, y = y_pos, label = manual.sig), size = 3)+
+  ylab('Fraction EdU+')+
+  xlab('Concentration')+
+  ylim(0,0.75)+
+  scale_fill_manual(values = colorRampPalette(c('white', 'black'))(length(unique(f1_l3_edu_fraction$perturb_string))))+
+  ggtitle('1C: EdU incorporation')
+
+f1c
+
+ggsave(filename = paste0(fig_dir, 'figure_1c', figure_suffix),
+       plot = f1c,
+       width = 3,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# EdU/2N/4N threshold plots for supplement
+
+edu_labels <- tibble(x = c(10,70,150),
+                     y = c(5,200,5),
+                     class = c('2N/EdU-',
+                               '4N/EdU-',
+                               'EdU+'))
+
+# sf1_a <- ggplot(f1_l3_status %>% filter(perturb == 'DMSO' & cell_line == 'HCC1143' & status != 'EdU+'), aes(x = nuc_dapi_total_intensity))+
+#   geom_density()+
+#   mytheme()+
+#   geom_vline(xintercept = 70, color = 'red', linewidth = 2, alpha = 0.5)+
+#   xlim(0,200)+
+#   ggtitle('HCC1143 2N/4N threshold \n (EdU- cells only)')
+# 
+# sf1_b <- ggplot(f1_l3_status %>% filter(perturb == 'DMSO' & cell_line == 'HCC1806' & status != 'EdU+'), aes(x = nuc_dapi_total_intensity))+
+#   geom_density()+
+#   mytheme()+
+#   geom_vline(xintercept = 45, color = 'red', linewidth = 2, alpha = 0.5)+
+#   xlim(0,200)+
+#   ggtitle('HCC1806 2N/4N threshold \n (EdU- cells only)')
+# 
+# sf1_c <- ggplot(f1_l3_status %>% filter(perturb == 'DMSO' & cell_line == 'MDAMB468' & status != 'EdU+'), aes(x = nuc_dapi_total_intensity))+
+#   geom_density()+
+#   mytheme()+
+#   geom_vline(xintercept = 55, color = 'red', linewidth = 2, alpha = 0.5)+
+#   xlim(0,200)+
+#   ggtitle('MDAMB468 2N/4N threshold \n (EdU- cells only)')
+
+sf1a_a <- ggplot(f1_l3_status %>% filter(perturb == 'DMSO' & cell_line == 'HCC1143') %>% filter(cell_id %in% cell_id[sample(x = nrow(.), size = 300)]), aes(x = nuc_dapi_total_intensity, y = nuc_cy5_total_intensity))+
+  geom_point(alpha = 0.5, size = 0.5)+
+  mytheme()+
+  geom_hline(yintercept = edu_thresh, color = 'red')+
+  geom_segment(aes(x = dapi_thresh[1], y = -10, xend = dapi_thresh[1], yend = edu_thresh), color = 'red')+
+  xlim(0,200)+
+  ylim(-10,200)+
+  ggtitle('HCC1143+DMSO')+
+  ylab('EdU total intensity (nuclear)')+
+  xlab('DAPI total intensity (nuclear)')
+
+sf1a_b <- ggplot(f1_l3_status %>% filter(perturb == 'DMSO' & cell_line == 'HCC1806') %>% filter(cell_id %in% cell_id[sample(x = nrow(.), size = 300)]), aes(x = nuc_dapi_total_intensity, y = nuc_cy5_total_intensity))+
+  geom_point(alpha = 0.5, size = 0.5)+
+  mytheme()+
+  geom_hline(yintercept = edu_thresh, color = 'red')+
+  geom_segment(aes(x = dapi_thresh[2], y = -10, xend = dapi_thresh[2], yend = edu_thresh), color = 'red')+
+  xlim(0,200)+
+  ylim(-10,200)+
+  ggtitle('HCC1806+DMSO')+
+  ylab('EdU total intensity (nuclear)')+
+  xlab('DAPI total intensity (nuclear)')
+
+sf1a_c <- ggplot(f1_l3_status %>% filter(perturb == 'DMSO' & cell_line == 'MDAMB468') %>% filter(cell_id %in% cell_id[sample(x = nrow(.), size = 300)]), aes(x = nuc_dapi_total_intensity, y = nuc_cy5_total_intensity))+
+  geom_point(alpha = 0.5, size = 0.5)+
+  mytheme()+
+  geom_hline(yintercept = edu_thresh, color = 'red')+
+  geom_segment(aes(x = dapi_thresh[3], y = -10, xend = dapi_thresh[3], yend = edu_thresh), color = 'red')+
+  xlim(0,200)+
+  ylim(-10,200)+
+  ggtitle('MDAMB468+DMSO')+
+  ylab('EdU total intensity (nuclear)')+
+  xlab('DAPI total intensity (nuclear)')
+
+sf1a <- gridExtra::grid.arrange(sf1a_a,
+                        sf1a_b,
+                        sf1a_c,
+                        ncol = 3,
+                               top = text_grob(label = 'S1A: Cell cycle state thresholds',
+                                               size = title_size))
+
+sf1a
+
+ggsave(filename = paste0(fig_dir, 'sf_1a', figure_suffix),
+       plot = sf1a,
+       width = 7,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+# Compare rate of multinucleation at 1nM vs DMSO
+
+ptx_multinuc <- f1_l3_status %>%
+  filter(perturb == 'PTX') %>%
+  group_by(row, cell_line, perturb_string, perturb) %>%
+  summarize(frac_multinuc = sum(multinucleated)/n()) %>% arrange(cell_line)
+
+dmso_multinuc <- f1_l3_status %>%
+  filter(perturb == 'DMSO') %>%
+  group_by(row, cell_line, perturb_string, perturb) %>%
+  summarize(frac_multinuc = sum(multinucleated)/n()) %>% arrange(cell_line)
+
+multinuc <- rbind(ptx_multinuc, dmso_multinuc)
+
+ggplot(multinuc, aes(x = perturb_string, y = frac_multinuc, fill = perturb))+
+  facet_wrap(~cell_line, ncol = 1)+
+  stat_compare_means()+
+  geom_boxplot()+
+  geom_point(position = 'dodge')+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Supplement figure 1D
+
+f1_l3_hcc1143_edu_by_multinuc <- f1_l3_hcc1143 %>%
+  dplyr::select(perturb_string, perturb, multinucleated, status) %>%
+  table() %>%
+  as_tibble() %>%
+  group_by(perturb_string, multinucleated) %>%
+  mutate(frac_of_nuc = n/sum(n)) %>%
+  mutate(perturb_string = factor(perturb_string, levels = perturb_string_order$perturb_string))
+
+sf1d <- ggplot(f1_l3_hcc1143_edu_by_multinuc %>% mutate(n_nuclei = ifelse(multinucleated, '1', '2+')), aes(x = n_nuclei, y = frac_of_nuc, fill = status))+
+  geom_col()+
+  facet_wrap(~perturb_string, ncol = 5)+
+  mytheme()+
+  ylab('Fraction of mono/multinucleated cells')+
+  ggtitle('S1D: Multinucleation vs cell cycle state')+
+  theme(axis.text.x = element_text(angle = 0),
+        strip.text.x = element_text(size = 5),
+        legend.position = 'top')+
+  xlab('Number of nuclei')
+
+sf1d
+
+ggsave(filename = paste0(fig_dir, 'sf_1d', figure_suffix),
+       plot = sf1d,
+       width = 3.5,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# 1B alt from EdU data
+
+f1_l4 <- f1_l3 %>%
+  dplyr::select(perturb_string, row, cell_line) %>%
+  table() %>%
+  as_tibble() %>%
+  filter(n != 0) %>%
+  mutate(perturb_string = factor(perturb_string, levels = perturb_string_order$perturb_string))
+
+f1_l4_ctrl <- f1_l4 %>%
+  filter(perturb_string == 'DMSO_0.1%') %>%
+  group_by(cell_line) %>%
+  summarize(ctrl_n = mean(n))
+
+ggplot(left_join(f1_l4, f1_l4_ctrl) %>%
+         filter(perturb_string != 'DMSO_0.1%'),
+       aes(x = perturb_string, y = 1 - n/ctrl_n, color = cell_line))+
+  geom_hline(yintercept = 0, linetype = 'dashed')+
+  geom_point()+
+  geom_smooth(aes(group = cell_line), method = log(y)~x, se = FALSE)+
+  mytheme()
+```
+
+
+# Figure 1
+
+## Read in data
+
+```{r}
+f1_stain_l2 <- read_csv('deps/230622_level_2.csv')
+f1_stain_l3 <- read_csv('deps/230622_level_3.csv') 
+
+ptx_string_dict <- tibble(ptx_dose_nM = sort(unique(f1_stain_l3$ptx_dose_nM)),
+                          dose_char = c('0.1%', '0.01nM', '0.04nM', '0.11nM', '0.33nM', '1nM', '3nM', '9nM', '27nM', '81nM'))
+
+f1_stain_l3$dose_char <- factor(plyr::mapvalues(x = f1_stain_l3$ptx_dose_nM,
+                                         from = ptx_string_dict$ptx_dose_nM,
+                                         to = ptx_string_dict$dose_char),
+                                levels = ptx_string_dict$dose_char)
+
+
+f1_stain_l3_s1 <- f1_stain_l3 %>%
+  filter(row %in% c('B', 'D', 'F'))
+
+f1_stain_l3_s2 <- f1_stain_l3 %>%
+  filter(row %in% c('C', 'E', 'G'))
+
+img_dir_40x <- 'deps/230506_ptx_titration_TUBB3_cPARP_p16-p15/'
+```
+
+# Fig 1A:  images
+
+```{r, eval = FALSE}
+cyto_dapi_images <- read_csv('deps/40x_img_to_use.csv') %>%
+  filter(use)
+
+col_doses <- f1_stain_l3 %>%
+  dplyr::select(column, ptx_dose_nM, dose_char) %>%
+  distinct()
+
+# Parse metadata
+meta_40x <- tibble(file = list.files(img_dir_40x, pattern = '*.tif'),
+                   file_full = list.files(img_dir_40x, pattern = '*.tif', full.names = TRUE)) %>%
+  mutate(file_parsed = str_replace_all(file, pattern = ' - |\\(fld | wv ', replacement = '_')) %>%
+  mutate(file_parsed = str_remove(file_parsed, pattern = '\\).tif')) %>%
+  mutate(row = str_split(file_parsed, pattern = '_', simplify = TRUE)[,1]) %>%
+  mutate(column = str_split(file_parsed, pattern = '_', simplify = TRUE)[,2]) %>%
+  mutate(field = str_split(file_parsed, pattern = '_', simplify = TRUE)[,3]) %>%
+  mutate(channel = str_split(file_parsed, pattern = '_', simplify = TRUE)[,4])
+
+# Image window size
+buffer <- 400
+
+# Read in images to display
+imgl <- list()
+
+for(i in 1:nrow(cyto_dapi_images)){
+  curr_row <- cyto_dapi_images[i,]
+  
+  curr_files <- meta_40x %>%
+    filter(as.numeric(column) == curr_row$column & row == curr_row$row & field == curr_row$field)
+  
+  x_dims <- (curr_row$x_coord-buffer):(curr_row$x_coord+buffer)
+  y_dims <- (curr_row$y_coord-buffer):(curr_row$y_coord+buffer)
+  
+  imgl[[i]] <- list(dapi = readImage(curr_files$file_full[curr_files$channel == 'UV'])[x_dims,y_dims],
+                              p15p16 = readImage(curr_files$file_full[curr_files$channel == 'Blue'])[x_dims,y_dims],
+                              cellmask = readImage(curr_files$file_full[curr_files$channel == 'Green'])[x_dims,y_dims],
+                              tubb3 = readImage(curr_files$file_full[curr_files$channel == 'Red'])[x_dims,y_dims])
+  
+}
+
+# Set thresholds from DMSO control using {0.01, 0.99} quantiles
+dapi_thresh <- quantile(imgl[[1]]$dapi, c(0.01, 0.99))
+p15p16_thresh <- quantile(imgl[[1]]$p15p16, c(0.01, 0.99))
+cellmask_thresh <- quantile(imgl[[1]]$cellmask, c(0.01, 0.99))
+tubb3_thresh <- quantile(imgl[[1]]$tubb3, c(0.01, 0.99))
+
+# Normalize and combine per channel
+
+# for(i in 1:length(imgl)){
+#   curr_dapi <- normalize(imgl[[i]]$dapi, dapi_thresh)
+#   curr_p15p16 <- normalize(imgl[[i]]$p15p16, p15p16_thresh)
+#   curr_cellmask <- normalize(imgl[[i]]$cellmask, cellmask_thresh)
+#   curr_tubb3 <- normalize(imgl[[i]]$tubb3, tubb3_thresh)
+#   
+#   if(i == 1){
+#     dapi_wide <- curr_dapi
+#     p15p16_wide <- curr_p15p16
+#     cellmask_wide <- curr_cellmask
+#     tubb3_wide <- curr_tubb3
+#   }else{
+#     dapi_wide <- abind(dapi_wide, curr_dapi, along = 1)
+#     p15p16_wide <- abind(p15p16_wide, curr_p15p16, along = 1)
+#     cellmask_wide <- abind(cellmask_wide, curr_cellmask, along = 1)
+#     tubb3_wide <- abind(tubb3_wide, curr_tubb3, along = 1)
+#   }
+#   
+# }
+# 
+# full_tile <- abind(dapi_wide,
+#                    p15p16_wide,
+#                    cellmask_wide,
+#                    tubb3_wide,
+#                    along = 2)
+# 
+# 
+# display(full_tile,
+#         method = 'raster')
+
+```
+
+# test ebimage extra
+
+composite = 220px high
+b&w = 800px high
+
+```{r, eval = FALSE}
+#remotes::install_github('ornelles/EBImageExtra')
+library('EBImageExtra')
+
+# Make b&w tile
+
+for(i in 1:length(imgl)){
+  curr_dapi <- normalize(imgl[[i]]$dapi, dapi_thresh) %>% drawROI(.)
+  curr_p15p16 <- normalize(imgl[[i]]$p15p16, p15p16_thresh) %>% drawROI(.)
+  curr_cellmask <- normalize(imgl[[i]]$cellmask, cellmask_thresh) %>% drawROI(.)
+  curr_tubb3 <- normalize(imgl[[i]]$tubb3, tubb3_thresh) %>% drawROI(.)
+  
+  curr_rgb <- rgbImage(red = curr_tubb3,
+                       green = curr_p15p16,
+                       blue = curr_dapi)
+  
+  if(i == 1){
+    dapi_wide <- curr_dapi
+    p15p16_wide <- curr_p15p16
+    cellmask_wide <- curr_cellmask
+    tubb3_wide <- curr_tubb3
+    
+    rgb_wide <- curr_rgb
+    
+  }else{
+    dapi_wide <- abind(dapi_wide, curr_dapi, along = 2)
+    p15p16_wide <- abind(p15p16_wide, curr_p15p16, along = 2)
+    cellmask_wide <- abind(cellmask_wide, curr_cellmask, along = 2)
+    tubb3_wide <- abind(tubb3_wide, curr_tubb3, along = 2)
+    
+    rgb_wide <- abind(rgb_wide, curr_rgb, along = 2)
+  }
+  
+}
+
+full_tile <- abind(dapi_wide,
+                   p15p16_wide,
+                   tubb3_wide,
+                   along = 1)
+
+
+# display(rgb_wide, method = 'raster')
+# boxtext(y = c(100 + 0:5*buffer*2),
+#         x = -200,
+#         label = c('DMSO', '0.0123 nM', '0.11 nM', '1 nM', '9 nM', '81nM'),
+#         cex = 1.5,
+#         col.text = 'black',
+#         col.bg = 'white',
+#         adj = c(0,0.5),
+#         padding = c(0.2,0.2))
+
+display(rgb_wide, method = 'raster')
+text(y = c(400 + 0:5*buffer*2),
+        x = -100,
+        label = c('DMSO', '0.0123 nM', '0.11 nM', '1 nM', '9 nM', '81nM'),
+        cex = 1.5,
+        col = 'black',
+        adj = c(0.5,0.5),,
+     srt = 90,
+     offset = 0)
+
+scaleBar(x = 650,
+         y = 700, 10*10, 10,
+         lwd = 5)
+
+
+```
+
+## 1D: Micrographs of stains
+
+```{r}
+# Define centers and image bounds
+dmso_cent <- c(1359, 370)
+ptx_cent <- c(1077, 331)
+
+bounds <- 300
+dmso_x_bounds <- (dmso_cent[1]-bounds):(dmso_cent[1]+bounds)
+dmso_y_bounds <- (dmso_cent[2]-bounds):(dmso_cent[2]+bounds)
+ptx_x_bounds <- (ptx_cent[1]-bounds):(ptx_cent[1]+bounds)
+ptx_y_bounds <- (ptx_cent[2]-bounds):(ptx_cent[2]+bounds)
+
+# Read in images
+## DMSO
+dmso_dapi <- readImage('deps/230622_ptx_titration_images/reference_images/E - 02(fld 3 wv UV - DAPI).tif')
+dmso_tubb3 <- readImage('deps/230622_ptx_titration_images/reference_images/E - 02(fld 3 wv Red - Cy5).tif')
+dmso_mask <- readImage('deps/230622_ptx_titration_images/reference_images/cyto_masks/230622_E_02_3_cp_masks.tif')
+## 1nM PTX
+ptx_dapi <- readImage('deps/230622_ptx_titration_images/reference_images/E - 07(fld 7 wv UV - DAPI).tif')
+ptx_tubb3 <- readImage('deps/230622_ptx_titration_images/reference_images/E - 07(fld 7 wv Red - Cy5).tif')
+ptx_mask <- readImage('deps/230622_ptx_titration_images/reference_images/cyto_masks/230622_E_07_7_cp_masks.tif')
+
+# Calculate 1st and 99th quantile of DMSO for normalization
+dapi_thresh <- quantile(dmso_dapi, c(0.01, 0.99))
+tubb3_thresh <- quantile(dmso_tubb3, c(0.01, 0.99))
+
+# Normalize images
+dmso_dapi_norm <- normalize(dmso_dapi, inputRange = dapi_thresh)
+dmso_tubb3_norm <- normalize(dmso_tubb3, inputRange = tubb3_thresh)
+ptx_dapi_norm <- normalize(ptx_dapi, inputRange = dapi_thresh)
+ptx_tubb3_norm <- normalize(ptx_tubb3, inputRange = tubb3_thresh)
+
+# Construct RGB image
+dmso_rgb <- rgbImage(red = dmso_tubb3_norm, blue = dmso_dapi_norm)
+ptx_rgb <- rgbImage(red = ptx_tubb3_norm, blue = ptx_dapi_norm)
+
+# Create monochrome with mask
+dmso_dapi_masked <- paintObjects(dmso_mask, rgbImage(red = dmso_dapi_norm, green = dmso_dapi_norm, blue = dmso_dapi_norm), opac = c(1,0), col = 'magenta')
+dmso_tubb3_masked <- paintObjects(dmso_mask, rgbImage(red = dmso_tubb3_norm, green = dmso_tubb3_norm, blue = dmso_tubb3_norm), opac = c(1,0), col = 'magenta')
+ptx_dapi_masked <- paintObjects(ptx_mask, rgbImage(red = ptx_dapi_norm, green = ptx_dapi_norm, blue = ptx_dapi_norm), opac = c(1,0), col = 'magenta')
+ptx_tubb3_masked <- paintObjects(ptx_mask, rgbImage(red = ptx_tubb3_norm, green = ptx_tubb3_norm, blue = ptx_tubb3_norm), opac = c(1,0), col = 'magenta')
+
+# Create horizontal grid for each condition
+
+dmso_grid <- EBImage::abind(dmso_rgb[dmso_x_bounds, dmso_y_bounds,] %>%
+                               EBImageExtra::drawROI(),
+                                           dmso_dapi_masked[dmso_x_bounds, dmso_y_bounds,] %>%
+                               EBImageExtra::drawROI(),
+                                           dmso_tubb3_masked[dmso_x_bounds, dmso_y_bounds,] %>%
+                               EBImageExtra::drawROI(),
+                                           along = 1)
+
+ptx_grid <- EBImage::abind(ptx_rgb[ptx_x_bounds, ptx_y_bounds,] %>%
+                               EBImageExtra::drawROI(),
+                                           ptx_dapi_masked[ptx_x_bounds, ptx_y_bounds,] %>%
+                               EBImageExtra::drawROI(),
+                                           ptx_tubb3_masked[ptx_x_bounds, ptx_y_bounds,] %>%
+                               EBImageExtra::drawROI(),
+                                           along = 1)
+
+f1d <- abind(dmso_grid, ptx_grid, along = 2)
+
+
+tiff(filename = paste0(fig_dir, 'figure_1d', figure_suffix), 
+     res = dpi_figures,
+     height = 2.5,
+     width = 3.75,
+     units = 'in')
+
+
+display(f1d, method = 'raster', margin = 100)
+
+text(y = -50,
+        x = c(bounds + 0:2*bounds*2),
+        label = c('Merged', 'DAPI', 'TUBB3'),
+        cex = 1,
+        col = c('black', 'blue', 'red'),
+        adj = c(0.5,0.5),
+     srt = 0,
+     offset = 0)
+
+text(y = c(bounds+0:2*bounds*2),
+        x = -35,
+        label = c('DMSO', '1nM PTX'),
+        cex = 1,
+        col = 'black',
+        adj = c(0.5,0.5),
+     srt = 90,
+     offset = 0)
+
+EBImageExtra::scaleBar(x = 100,
+         y = 100,
+         pixels = 30.77*2,
+         distance = 10,
+         lwd = 3,
+         cex = .5,
+         adj = c(0.5,-0.25))
+
+dev.off()
+```
+
+
+## 1B: Nuclear content versus dose
+
+540 x 720
+
+```{r, fig.asp = 1, eval = FALSE}
+library(ggridges)
+
+# Find local maxima in control/DMSO treated - note this uses an absolute threshold of 150 to separate 
+ctrl_dapi_ti <- f1_l3 %>%
+  filter(ptx_dose_nM == 0) %>%
+  dplyr::select(nuc_dapi_total_intensity) %>%
+  pull()
+
+d <- density(ctrl_dapi_ti)
+window_2n <- which(d$x < 350)
+
+peak_2n <- d$x[which(d$y == max(d$y[window_2n]))]
+peak_4n <- d$x[which(d$y == max(d$y[-window_2n]))]
+
+# Plot highlighting control maxima
+ggplot(f1_l3, aes(x = nuc_dapi_total_intensity, y = dose_char, group = dose_char, fill = dose_char))+
+  geom_density_ridges(alpha = 0.4, size = 1.25, scale = 1)+
+  xlim(limits = quantile(f1_l3$nuc_dapi_total_intensity, c(0.01, 0.99), na.rm = TRUE))+
+  theme_bw()+
+  ylab('Paclitaxel Dose')+
+  xlab('DAPI total nuclear intensity')+
+  ggtitle('1C: HCC1143 nuclear content at 72 hours treatment')+
+  geom_vline(xintercept = c(peak_2n, peak_4n), linetype = 'dashed')
+
+# Norm to control
+
+ctrl <- f1_l3 %>%
+  filter(ptx_dose_nM == 0) %>%
+  group_by(row) %>%
+  summarize(mean_nuc_dapi_ti = mean(nuc_dapi_total_intensity))
+
+f1_l3_norm <- f1_l3 %>%
+  mutate(dmso_mean_dapi_ti = as.numeric(plyr::mapvalues(x = row,
+                                             from = ctrl$row,
+                                             to = ctrl$mean_nuc_dapi_ti))) %>%
+  mutate(nuc_dapi_ti_norm = nuc_dapi_total_intensity/dmso_mean_dapi_ti) %>%
+  mutate(dose_char = factor(dose_char, levels = rev(levels(.$dose_char))))
+
+ctrl_dapi_ti <- f1_l3_norm %>%
+  filter(ptx_dose_nM == 0) %>%
+  dplyr::select(nuc_dapi_ti_norm) %>%
+  pull()
+
+d <- density(ctrl_dapi_ti)
+window_2n <- which(d$x < 1)
+
+peak_2n <- d$x[which(d$y == max(d$y[window_2n]))]
+peak_4n <- d$x[which(d$y == max(d$y[-window_2n]))]
+
+# Plot highlighting control maxima
+f1b <- ggplot(f1_l3_norm, aes(x = nuc_dapi_ti_norm, y = dose_char, group = dose_char, fill = dose_char))+
+  geom_density_ridges(alpha = 0.8, scale = 0.8, linewidth = 0.5)+
+  xlim(limits = quantile(f1_l3_norm$nuc_dapi_ti_norm, c(0, 0.99), na.rm = TRUE))+
+  theme_bw()+
+  ylab('Paclitaxel Dose (nM)')+
+  xlab('DAPI total nuclear intensity (A.U.)')+
+  ggtitle('1B: HCC1143 DAPI total intensity')+
+  geom_vline(xintercept = c(peak_2n, peak_4n), linetype = 'dashed', size = 0.5)+
+  scale_fill_manual(values = colorRampPalette(c('black', 'white'))(length(unique(f1_l3_norm$dose_char))))+
+  mytheme()+
+  theme(legend.position = 'none')
+
+
+f1b
+
+ggsave(filename = paste0(fig_dir, 'figure_1b', figure_suffix),
+       plot = f1b,
+       width = 3.5,
+       height = 3.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+```
+
+## 1C: Paclitaxel reduces cell count and increases proportion of multinucleated cells
+
+```{r, eval = FALSE}
+f1_l4 <- f1_l3 %>%
+  group_by(ptx_dose_nM, row) %>%
+  summarize(n_cells = n(),
+            fraction_multinucleated = sum(multinucleated)/n_cells,
+            n_multinucleated = sum(multinucleated))
+
+f1_l4_ctrl <- f1_l4 %>%
+  filter(ptx_dose_nM == 0)
+
+f1_l4_drugged <- f1_l4 %>%
+  filter(ptx_dose_nM != 0) %>%
+  mutate(n_cells_norm = n_cells/f1_l4_ctrl$n_cells)
+
+# f1c <- ggplot(f1_l4_drugged, aes(x = ptx_dose_nM*1e9, y = n_cells_norm))+
+#   geom_smooth(se = FALSE, color = 'blue', size = 0.5, alpha = 0.7)+
+#   geom_point(size = 0.5, fill = 'blue', shape = 21, color = 'black')+
+#   geom_smooth(aes(x = ptx_dose_nM*1e9, y = fraction_multinucleated), color = 'red', se = FALSE, size = 0.5, alpha = 0.7)+
+#   geom_point(aes(x = ptx_dose_nM*1e9, y = fraction_multinucleated), fill = 'red', size = 0.5, shape = 21, color = 'black')+
+#   scale_x_log10(breaks = 10^(-2:2),
+#                 labels = function(x) as.character(x))+
+#   theme_bw()+
+#   xlab('Paclitaxel Dose (nM)')+
+#   ylab('Normalized number of cells \n (Relative to DMSO control)')+
+#   scale_y_continuous(name = 'Normalized cell number \n (Relative to DMSO control)', breaks = seq(from = 0, to = 1.2, by = 0.2),
+#                      sec.axis = sec_axis(~.,
+#                                          name = 'Fraction Multinucleated',
+#                                          breaks = seq(from = 0, to = 1.2, by = 0.2)))+
+#   theme_bw()+
+#   theme(axis.title.y.left = element_text(color = 'blue'),
+#         axis.title.y.right = element_text(color = 'red'))+
+#   geom_hline(yintercept = 1, color = 'blue', linetype = 'dashed')+
+#   geom_hline(yintercept = mean(f1_l4_ctrl$fraction_multinucleated), color = 'red', linetype = 'dashed')+
+#   ggtitle('1C: HCC1143 treated with Paclitaxel for 72 hours')+
+#   theme(text=element_text(size=6))
+# 
+# f1c
+# 
+# ggsave(filename = paste0(fig_dir, 'figure_1c', figure_suffix),
+#        plot = f1b,
+#        width = 3.5,
+#        height = 3.5,
+#        device=figure_device,
+#        dpi=dpi_figures)
+
+# Dot with SEM error lines
+
+f1_l4_drugged2 <- f1_l4_drugged %>%
+  group_by(ptx_dose_nM) %>%
+  summarize(mean_n_cells_norm = mean(n_cells_norm),
+            sem_n_cells_norm = sd(n_cells_norm)/(n()^0.5),
+            mean_fraction_multinucleated = mean(fraction_multinucleated),
+            sem_fraction_multinucleated = sd(fraction_multinucleated)/(n()^0.5))
+
+
+f1c2 <- ggplot(f1_l4_drugged2, aes(x = ptx_dose_nM*1e9, y = mean_n_cells_norm))+
+  geom_hline(yintercept = 1, color = 'blue', linetype = 'dashed', alpha = 0.5, linewidth = 0.5)+
+  geom_hline(yintercept = mean(f1_l4_ctrl$fraction_multinucleated), color = 'red', linetype = 'dashed', alpha = 0.5, linewidth = 0.5)+
+  geom_errorbar(aes(ymin=mean_n_cells_norm - sem_n_cells_norm, ymax=mean_n_cells_norm + sem_n_cells_norm), width=.2, linewidth = 0.5)+
+  geom_errorbar(aes(ymin=mean_fraction_multinucleated - sem_fraction_multinucleated, ymax=mean_fraction_multinucleated + sem_fraction_multinucleated), width=.2, linewidth = 0.5)+
+  geom_point(size = 1, shape = 16, color = 'blue', alpha = 0.8)+
+  geom_point(aes(x = ptx_dose_nM*1e9, y = mean_fraction_multinucleated), size = 1, shape = 16, color = 'red', alpha = 0.8)+
+  scale_x_log10(breaks = 10^(-2:2),
+                labels = function(x) as.character(x))+
+  theme_bw()+
+  xlab('Paclitaxel Dose (nM)')+
+  ylab('Normalized number of cells \n (Relative to DMSO control)')+
+  scale_y_continuous(name = 'Normalized cell number \n (Relative to DMSO control)', breaks = seq(from = 0, to = 1.2, by = 0.2),
+                     sec.axis = sec_axis(~.,
+                                         name = 'Fraction Multinucleated',
+                                         breaks = seq(from = 0, to = 1.2, by = 0.2)))+
+  mytheme()+
+  theme(axis.title.y.left = element_text(color = 'blue'),
+        axis.title.y.right = element_text(color = 'red'))+
+  ggtitle('1C: PTX dose alters cell count \n and multinucleation')
+
+ggsave(filename = paste0(fig_dir, 'figure_1c', figure_suffix),
+       plot = f1c2,
+       width = 3.5,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+f1c3 <- ggplot(f1_l4_drugged2, aes(x = ptx_dose_nM*1e9, y = mean_n_cells_norm))+
+  geom_hline(yintercept = 1, color = 'blue', linetype = 'dashed', alpha = 0.5, linewidth = 0.5)+
+  geom_hline(yintercept = mean(f1_l4_ctrl$fraction_multinucleated), color = 'red', linetype = 'dashed', alpha = 0.5, linewidth = 0.5)+
+  geom_line(size = 1, color = 'blue', alpha = 0.8)+
+  geom_line(aes(x = ptx_dose_nM*1e9, y = mean_fraction_multinucleated), size = 1, color = 'red', alpha = 0.8)+
+  geom_errorbar(aes(ymin=mean_n_cells_norm - sem_n_cells_norm, ymax=mean_n_cells_norm + sem_n_cells_norm), width=.2, linewidth = 0.5)+
+  geom_errorbar(aes(ymin=mean_fraction_multinucleated - sem_fraction_multinucleated, ymax=mean_fraction_multinucleated + sem_fraction_multinucleated), width=.2, linewidth = 0.5)+
+  scale_x_log10(breaks = 10^(-2:2),
+                labels = function(x) as.character(x))+
+  theme_bw()+
+  xlab('Paclitaxel Dose (nM)')+
+  ylab('Normalized number of cells \n (Relative to DMSO control)')+
+  scale_y_continuous(name = 'Normalized cell number \n (Relative to DMSO control)', breaks = seq(from = 0, to = 1.2, by = 0.2),
+                     sec.axis = sec_axis(~.,
+                                         name = 'Fraction Multinucleated',
+                                         breaks = seq(from = 0, to = 1.2, by = 0.2)))+
+  mytheme()+
+  theme(axis.title.y.left = element_text(color = 'blue'),
+        axis.title.y.right = element_text(color = 'red'))+
+  ggtitle('1C: PTX dose alters cell count \n and multinucleation')
+
+f1c3
+
+ggsave(filename = paste0(fig_dir, 'figure_1c_alt', figure_suffix),
+       plot = f1c3,
+       width = 3.5,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+  
+```
+
+
+
+## 1D: 
+
+```{r}
+# Summary barplot
+l3_s2_ctrl <- f1_stain_l3_s2 %>%
+  group_by(row) %>%
+  filter(dose_char == '0.1%') %>%
+  summarize(ctrl_mean_cy5_cyto = mean(cy5_cyto_b.mean, na.rm = TRUE),
+            ctrl_mean_cy5_nuc = mean(cy5_nuc_b.mean, na.rm = TRUE),
+            ctrl_mean_gfp_cyto = mean(gfp_cyto_b.mean, na.rm = TRUE),
+            ctrl_mean_gfp_nuc = mean(gfp_nuc_b.mean, na.rm = TRUE),
+            ctrl_ti_dapi_nuc = mean(nuc_dapi_total_intensity, na.rm = TRUE))
+
+
+f1d_dat <- left_join(x = f1_stain_l3_s2,
+                 y = l3_s2_ctrl,
+                 by = 'row') %>%
+  mutate(norm_cy5_cyto = cy5_cyto_b.mean/ctrl_mean_cy5_cyto,
+         norm_cy5_nuc = cy5_nuc_b.mean/ctrl_mean_cy5_nuc,
+         norm_gfp_cyto = gfp_cyto_b.mean/ctrl_mean_gfp_cyto,
+         norm_gfp_nuc = gfp_nuc_b.mean/ctrl_mean_gfp_nuc,
+         norm_dapi_ti = nuc_dapi_total_intensity/ctrl_ti_dapi_nuc)
+
+# Adjust so it visualizes replicates
+
+f1d_sum <- f1d_dat %>%
+  group_by(dose_char, row) %>%
+  summarize(mean_tubb3_cyto = mean(norm_cy5_cyto),
+            mean_tubb3_nuc = mean(norm_cy5_nuc),
+            mean_p16_cyto = mean(norm_gfp_cyto),
+            mean_p16_nuc = mean(norm_gfp_nuc))
+
+f1d_sum_means <- f1d_sum %>%
+  dplyr::select(-row) %>%
+  summarize_all(.funs = mean)
+
+# Significance from control with Dunnett's test
+tubb3_cyto_dunnett <- DescTools::DunnettTest(x = f1d_sum$mean_tubb3_cyto, g = f1d_sum$dose_char)
+
+tubb3_cyto_dunnett_tib <- as_tibble(tubb3_cyto_dunnett$`0.1%`) %>%
+  mutate(comparison = row.names(tubb3_cyto_dunnett$`0.1%`)) %>%
+  mutate(ptx_dose = str_remove(comparison, pattern = '-0.1%'))  %>%
+  mutate(p = pval) %>%
+  mutate(manual.sig = ifelse(p >= 0.05,
+                                        '',
+                                        ifelse(p >= 0.01,
+                                               '*',
+                                               ifelse(p >= 0.001,
+                                                      '**',
+                                                      '***'))))  %>%
+  mutate(x_pos = 1:nrow(.)) %>%
+  mutate(y_pos = 0.3+as.numeric(plyr::mapvalues(ptx_dose,
+                                 from = f1d_sum_means$dose_char,
+                                 to = f1d_sum_means$mean_tubb3_cyto))) %>%
+  mutate(ptx_dose = str_remove(ptx_dose, pattern = 'nM'))
+
+p16_cyto_dunnett <- DescTools::DunnettTest(x = f1d_sum$mean_p16_cyto, g = f1d_sum$dose_char)
+
+p16_cyto_dunnett_tib <- as_tibble(p16_cyto_dunnett$`0.1%`) %>%
+  mutate(comparison = row.names(p16_cyto_dunnett$`0.1%`)) %>%
+  mutate(ptx_dose = str_remove(comparison, pattern = '-0.1%'))  %>%
+  mutate(p = pval) %>%
+  mutate(manual.sig = ifelse(p >= 0.05,
+                                        '',
+                                        ifelse(p >= 0.01,
+                                               '*',
+                                               ifelse(p >= 0.001,
+                                                      '**',
+                                                      '***')))) %>%
+  mutate(x_pos = 1:nrow(.))  %>%
+  mutate(y_pos = 0.3+as.numeric(plyr::mapvalues(ptx_dose,
+                                 from = f1d_sum_means$dose_char,
+                                 to = f1d_sum_means$mean_p16_cyto))) %>%
+  mutate(ptx_dose = str_remove(ptx_dose, pattern = 'nM'))
+
+# Filter to paclitaxel treated samples and remove 'nM' suffix for mean and per sample tibbles
+f1d_sum_means_filt <- f1d_sum_means %>%
+  filter(dose_char != '0.1%') %>%
+  mutate(dose_char = str_remove(dose_char, pattern = 'nM'))
+
+f1d_sum_filt <- f1d_sum %>%
+  filter(dose_char != '0.1%') %>%
+  mutate(dose_char = str_remove(dose_char, pattern = 'nM'))
+
+# Plot for TUBB3 and p16/p15
+
+f1e <- ggbarplot(f1d_sum_means_filt, x = 'dose_char', y = 'mean_tubb3_cyto', fill = 'dose_char', width = 0.6)+
+  xlab('Paclitaxel Dose (nM) ')+
+  ylab('Mean intensity \n(relative to control)')+
+  geom_hline(yintercept = 1, linetype = 'dashed')+
+  geom_point(data = f1d_sum_filt, size = 2, shape = 21, color = 'black', fill = 'white', alpha = 0.7)+
+  geom_text(data = tubb3_cyto_dunnett_tib,
+            aes(x = ptx_dose, y = y_pos, label = manual.sig),
+            size = 3)+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'none')+
+  scale_fill_manual(values = colorRampPalette(c('white', 'black'))(length(ptx_string_dict$dose_char))[-1])+
+  ggtitle('1E: TUBB3 intensity')
+
+f1f <- ggbarplot(f1d_sum_means_filt, x = 'dose_char', y = 'mean_p16_cyto', fill = 'dose_char', width = 0.6)+
+  xlab('Paclitaxel Dose (nM)')+
+  ylab('Mean intensity \n(relative to control)')+
+  geom_hline(yintercept = 1, linetype = 'dashed')+
+  geom_point(data = f1d_sum_filt, size = 2, shape = 21, color = 'black', fill = 'white', alpha = 0.7)+
+  geom_text(data = p16_cyto_dunnett_tib,
+            aes(x = x_pos, y = y_pos, label = manual.sig),
+            size = 3)+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'none')+
+  scale_fill_manual(values = colorRampPalette(c('white', 'black'))(length(unique(ptx_string_dict$dose_char)))[-1])+
+  ggtitle('1F: p16/p15 intensity')
+
+# f1d <- gridExtra::grid.arrange(gg1, gg2,
+#                                ncol = 1,
+#                                top = text_grob(label = '1D: Staining intensity per dose',
+#                                                size = title_size))
+# 
+# f1d
+
+# ggsave(filename = paste0(fig_dir, 'figure_1d', figure_suffix),
+#        plot = f1d,
+#        width = 3.25,
+#        height = 4,
+#        device=figure_device,
+#        dpi=dpi_figures)
+
+ggsave(filename = paste0(fig_dir, 'figure_1e', figure_suffix),
+       plot = f1e,
+       width = 2.25,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+ggsave(filename = paste0(fig_dir, 'figure_1f', figure_suffix),
+       plot = f1f,
+       width = 2.25,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# 240925 - heatmap
+
+stain_df <- f1d_sum_means %>%
+  dplyr::select(dose_char, mean_tubb3_cyto, mean_p16_cyto) %>%
+  filter(dose_char != '0.1%') %>%
+  data.frame(., row.names = 'dose_char') %>%
+  t()
+
+row.names(stain_df) <- c('Tubulin 3', 'p16/p15')
+
+pheatmap::pheatmap(stain_df,
+                   cluster_cols = FALSE,
+                   cluster_rows = FALSE,
+                   main = '1D: Average Cytoplasmic mean intensity')
+```
+
+## 1E: cPARP positivity vs Paclitaxel
+
+```{r}
+library(rstatix)
+library(ggpubr)
+
+l3_s1_ctrl <- f1_stain_l3_s1 %>%
+  filter(dose_char == '0.1%') %>%
+  group_by(row) %>%
+  summarize(ctrl_mean_cy5_cyto = mean(cy5_cyto_b.mean, na.rm = TRUE),
+            ctrl_mean_cy5_nuc = mean(cy5_nuc_b.mean, na.rm = TRUE),
+            ctrl_mean_gfp_cyto = mean(gfp_cyto_b.mean, na.rm = TRUE),
+            ctrl_mean_gfp_nuc = mean(gfp_nuc_b.mean, na.rm = TRUE),
+            ctrl_ti_dapi_nuc = mean(nuc_dapi_total_intensity, na.rm = TRUE))
+
+
+f1g_dat <- left_join(x = f1_stain_l3_s1,
+                  y = l3_s1_ctrl,
+                  by = 'row',
+                  suffix = c('', '')) %>%
+  mutate(norm_cy5_cyto = cy5_cyto_b.mean/ctrl_mean_cy5_cyto,
+         norm_cy5_nuc = cy5_nuc_b.mean/ctrl_mean_cy5_nuc,
+         norm_gfp_cyto = gfp_cyto_b.mean/ctrl_mean_gfp_cyto,
+         norm_gfp_nuc = gfp_nuc_b.mean/ctrl_mean_gfp_nuc,
+         norm_dapi_ti = nuc_dapi_total_intensity/ctrl_ti_dapi_nuc) %>%
+  mutate(nuclear_status = ifelse(multinucleated,
+                                 'multinucleated',
+                                 'mononucleated'))
+
+control_cparp_norm <- f1g_dat %>%
+  filter(dose_char == '0.1%') %>%
+  dplyr::select(norm_cy5_nuc) %>%
+  pull()
+
+cparp_cutoff = mean(control_cparp_norm, na.rm = TRUE) + 3*sd(control_cparp_norm, na.rm = TRUE)
+
+f1g_sum <- f1g_dat %>%
+  mutate(cparp_positive = norm_cy5_nuc > cparp_cutoff) %>%
+  group_by(dose_char, row, nuclear_status) %>%
+  summarize(fraction_cparp_positive = sum(cparp_positive, na.rm = TRUE)/n())
+
+f1g_means <- f1g_sum %>%
+  group_by(dose_char, nuclear_status) %>%
+  dplyr::select(-row) %>%
+  summarize_all(.funs = mean)
+
+# Run pairwise t test for each grouping, note: this is just to pull formatting compatible with ggpubr::ggbarplot - statistical results are not to be used.
+
+f1g_stats <- f1g_sum %>%
+  group_by(dose_char) %>%
+  pairwise_t_test(fraction_cparp_positive~nuclear_status) %>%
+  add_xy_position(x = 'dose_char')
+
+# Run proportions test for each pair
+f1g_xtab <- f1g_dat %>%
+  mutate(cparp_positive = norm_cy5_nuc > cparp_cutoff) %>%
+  group_by(dose_char, nuclear_status) %>%
+  summarize(n_successes = sum(cparp_positive, na.rm = TRUE),
+            n_trials = sum(!is.na(norm_cy5_nuc)))
+
+
+
+for(i in unique(f1g_xtab$dose_char)){
+  curr_xtab <- f1g_xtab %>%
+    filter(dose_char == i)
+  
+  p <- prop.test(x = curr_xtab$n_successes,
+            n = curr_xtab$n_trials)
+  
+  curr_stat <- tibble(dose_char = i,
+                      prop.p.val = p$p.value,
+                      group1 = FALSE,                      group2 = TRUE,
+                      prop.sig = ifelse(p$p.value >= 0.05,
+                                        'ns.',
+                                        ifelse(p$p.value >= 0.01,
+                                               '*',
+                                               ifelse(p$p.value >= 0.001,
+                                                      '**',
+                                                      '***'))))
+  
+  if(i == unique(f1g_xtab$dose_char)[1]){
+    f1g_stats2 <- curr_stat
+  }else(
+    f1g_stats2 <- rbind(f1g_stats2, curr_stat)
+  )
+  
+}
+
+f1g_stats3 <- left_join(x = f1g_stats,
+                        y = f1g_stats2,
+                        by = 'dose_char',
+                        suffix = c('', ''))
+
+
+# With stats
+
+f1g_stats3_fixedx <- f1g_stats3 %>% # This adjusts the x axis for p value brackets for faceting in plot below
+  mutate(treatment = ifelse(dose_char == '0.1%', 'DMSO', 'PTX')) %>%
+  mutate(x = ifelse(treatment == 'DMSO', x, x - 1)) %>%
+  mutate(xmin = ifelse(treatment == 'DMSO', xmin, xmin - 1)) %>%
+  mutate(xmax = ifelse(treatment == 'DMSO', xmax, xmax - 1))
+
+f1g <- ggbarplot(f1g_means %>% mutate(treatment = ifelse(dose_char == '0.1%', 'DMSO', 'PTX')), x = 'dose_char', y = 'fraction_cparp_positive', fill = 'nuclear_status', position = position_dodge(0.8), size = 0.25)+
+  stat_pvalue_manual(f1g_stats3_fixedx,
+                     label = 'prop.sig',
+                     tip.length = 0.025,
+                     size = 3)+
+  xlab('Concentration')+
+  ylab('Fraction cPARP positive')+
+  ggtitle('1G: Fraction cPARP positive')+
+  geom_point(data = f1g_sum %>% mutate(treatment = ifelse(dose_char == '0.1%', 'DMSO', 'PTX')), aes(group = nuclear_status), position = position_dodge(width = .8), size = 1, alpha = 0.75, shape = 21)+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top',
+        strip.text.x = element_text(size = 6))+
+  labs(fill = '',
+       shape = '')+
+  facet_grid(.~treatment, scales = 'free_x', space = 'free')+
+  scico::scale_fill_scico_d(palette = 'hawaii')+
+  ylim(c(0,0.225))
+
+
+f1g
+
+ggsave(filename = paste0(fig_dir, 'figure_1g', figure_suffix),
+       plot = f1g,
+       width = 3,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+# Supplemental Figure 1
+
+```{r}
+# Correlation plot of p16/p15 with TUBB3
+
+f1_l3_ceg <- f1_stain_l3 %>%
+  filter(row %in% c('C', 'E', 'G'))
+
+mod <- lm(cy5_cyto_b.mean~gfp_cyto_b.mean, data = f1_l3_ceg)
+f1l3_cor <- cor.test(x = f1_l3_ceg$gfp_cyto_b.mean, y = f1_l3_ceg$cy5_cyto_b.mean)
+
+f1_l3_ctrl <- f1_l3_ceg %>%
+  filter(dose_char == '0.1%') %>%
+  dplyr::select(-dose_char)
+
+sf1b <- ggplot(f1_l3_ceg %>% filter(dose_char != '0.1%'), aes(x = gfp_cyto_b.mean*2^16, y = cy5_cyto_b.mean*2^16))+
+  geom_density2d(data = f1_l3_ceg, linewidth = 0.25, color = 'black')+
+  xlab('p15/p16 Mean intensity \n (Nuclear + cytoplasm, A.U.)')+
+  ylab('TUBB3 Mean intensity \n (Nuclear + cytoplasm, A.U.)')+
+  labs(subtitle = paste0('r^2 = ', round(summary(mod)$r.squared,3)), hjust = 0)+
+  ggtitle('S1B: TUBB3 vs p15/p16 \n (all Paclitaxel doses)')+
+  geom_smooth(method = 'lm', color = 'blue', linewidth = 0.5, se = FALSE)+
+  scale_x_continuous(trans = "log2", limits=c(2^7,2^12))+ 
+  scale_y_continuous(trans = "log2", limits=c(2^7,2^14))+ 
+  mytheme()
+
+# p16/p15 vs TUBB3 correlation
+
+sf1c <- ggplot(f1_l3_ceg %>% filter(dose_char != '0.1%'), aes(x = gfp_cyto_b.mean*2^16, y = cy5_cyto_b.mean*2^16))+
+  geom_point(data = f1_l3_ctrl, aes(color = 'DMSO'), alpha = 0.5, size = 0.25)+
+  geom_point(aes(color = 'Paclitaxel'), alpha = 0.7, size = 0.25)+
+  facet_wrap(~dose_char, ncol = 3)+
+  scale_x_continuous(trans = "log2", limits=c(2^7,2^12))+ 
+  scale_y_continuous(trans = "log2", limits=c(2^7,2^14))+ 
+  xlab('p15/p16 Mean intensity \n (Nuclear + cytoplasm, A.U.)')+
+  ylab('TUBB3 Mean intensity \n (Nuclear + cytoplasm, A.U.)')+
+  ggtitle('S1C:TUBB3 vs p15/p16 by PTX dose')+
+  scale_color_manual(values = c('DMSO' = 'gray', 'Paclitaxel' = 'black'))+
+  mytheme()+
+  theme(legend.position = 'top',
+        axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(color = 'treatment')+
+  guides(color = guide_legend(override.aes = list(size = 2)))
+
+# DAPI vs cPARP nuclear TI
+
+# f1_l3_b_ctrl <- f1_stain_l3 %>%
+#   filter(row %in% c('B', 'D', 'F') & dose_char == 'DMSO') %>%
+#   dplyr::select(-dose_char)
+# 
+# 
+# sf1d <- ggplot(f1e_dat, aes(x = norm_dapi_ti, y = norm_cy5_nuc, color = multinucleated))+
+#   geom_point(size = 0.5, alpha = 0.7)+
+#   facet_wrap(~dose_char, ncol = 4)+
+#   geom_hline(yintercept = cparp_cutoff, linetype = 'dashed')+
+#   scale_y_log10()+
+#   xlab('Normalized Dapi Total Intensity')+
+#   ylab('Normalized cPARP nuclear Total Intensity')+
+#   ggtitle('S1D: cPARP vs DAPI total intensity')+
+#   mytheme()+
+#   theme(legend.position = 'top')+
+#   guides(color = guide_legend(override.aes = list(size = 2)))
+
+# sf1c2 <- ggplot(f1e_dat, aes(x = norm_dapi_ti, color = multinucleated))+
+#   geom_density(size = 0.5, alpha = 0.7)+
+#   facet_wrap(~dose_char, ncol = 3)+
+#   geom_vline(xintercept = cparp_cutoff, linetype = 'dashed')+
+#   theme_bw()+
+#   xlab('Normalized Dapi Total Intensity')+
+#   ylab('Normalized cPARP nuclear Total Intensity')+
+#   ggtitle('S1C: cPARP vs DAPI total intensity')+
+#   theme(text = element_text(size = 4),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank())
+
+
+sf1b
+sf1c
+
+ggsave(filename = paste0(fig_dir, 'sf_1b', figure_suffix),
+       plot = sf1b,
+       width = 3,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+ggsave(filename = paste0(fig_dir, 'sf_1c', figure_suffix),
+       plot = sf1c,
+       width = 4,
+       height = 3.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# Reviewer response figures
+
+## Non nuclear cell area
+
+f1_l3_mean_size <- f1_l3 %>%
+  group_by(perturb_string, plate, row, cell_line, concentration) %>%
+  summarize(mean_nuc_area = mean(nuc_s.area_sum, na.rm = TRUE),
+            mean_cyto_area = mean(cyto_s.area, na.rm = TRUE),
+            mean_nonnuc_area = mean(cyto_s.area - nuc_s.area_sum, na.rm = TRUE))
+
+rev_size <- ggplot(f1_l3, aes(x = perturb_string, y = cyto_s.area - nuc_s.area_sum, fill = perturb))+
+  geom_boxplot(outliers = FALSE)+
+  facet_wrap(~cell_line, scales = 'free_y')+
+  ylab('Non-nuclear cell area \n (Cytoplasmic area - nuclear area, pixels)')+
+  mytheme()+
+  xlab('')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  scale_fill_manual(breaks = c('DMSO', 'PTX'), values = ptx_cols$colors[c(2,4)])+
+  ggtitle('Cytoplasmic area across PTX concentrations')+
+  theme(legend.position = 'none')
+
+rev_size
+
+ggsave(filename = paste0(fig_dir, 'rev_size', figure_suffix),
+       plot = rev_size,
+       width = 6,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+ggplot(f1_l3, aes(fill = perturb_string, x = cyto_s.area))+
+  geom_density(alpha = 0.5)+
+  facet_grid(cell_line~., space = 'free_x', scales = 'free_x')+
+  ylab('Non-nuclear cell area \n (Cytoplasmic area - nuclear area, pixels)')+
+  mytheme()+
+  xlab('')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(f1_l3_mean_size %>% filter(perturb_string != 'DMSO_0.1%'), aes(x = perturb_string, y = mean_nonnuc_area, color = cell_line))+
+  geom_point()+
+  mytheme()
+  
+
+# Multinucleated p16/p15
+
+s2_multi_mean <- f1d_dat %>%
+  group_by(multinucleated, dose_char, row) %>%
+  summarize(mean_cy5 = mean(norm_cy5_nuc, na.rm = TRUE),
+            mean_gfp = mean(norm_gfp_nuc, na.rm = TRUE)) %>%
+  mutate(nuclear_status = ifelse(multinucleated, 'multinucleated', 'mononucleated'))
+
+s2_multi_mean_ave <- s2_multi_mean %>%
+  dplyr::select(-row, -multinucleated) %>%
+  group_by(nuclear_status, dose_char) %>%
+  summarize_all(.funs = mean)
+
+
+ggbarplot(s2_multi_mean_ave %>% mutate(treatment = ifelse(dose_char == '0.1%', 'DMSO', 'PTX')), x = 'dose_char', y = 'mean_cy5', fill = 'nuclear_status', position = position_dodge(0.8), size = 0.25)+
+  xlab('Concentration')+
+  ylab('Mean TUBB3 Intensity')+
+  ggtitle('PTX vs TUBB3')+
+  geom_point(data = s2_multi_mean %>% mutate(treatment = ifelse(dose_char == '0.1%', 'DMSO', 'PTX')), aes(group = nuclear_status), position = position_dodge(width = .8), size = 1, alpha = 0.75, shape = 21)+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top',
+        strip.text.x = element_text(size = 6))+
+  labs(fill = '',
+       shape = '')+
+  facet_grid(.~treatment, scales = 'free_x', space = 'free')+
+  scico::scale_fill_scico_d(palette = 'hawaii')
+
+ggbarplot(s2_multi_mean_ave %>% mutate(treatment = ifelse(dose_char == '0.1%', 'DMSO', 'PTX')), x = 'dose_char', y = 'mean_gfp', fill = 'nuclear_status', position = position_dodge(0.8), size = 0.25)+
+  xlab('Concentration')+
+  ylab('Mean p16 intensity')+
+  ggtitle('PTX vs p16')+
+  geom_point(data = s2_multi_mean %>% mutate(treatment = ifelse(dose_char == '0.1%', 'DMSO', 'PTX')), aes(group = nuclear_status), position = position_dodge(width = .8), size = 1, alpha = 0.75, shape = 21)+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top',
+        strip.text.x = element_text(size = 6))+
+  labs(fill = '',
+       shape = '')+
+  facet_grid(.~treatment, scales = 'free_x', space = 'free')+
+  scico::scale_fill_scico_d(palette = 'hawaii')
+
+```
+
+# Figure 2
+
+## Set up
+
+## Load libraries
+```{r}
+library(tidyverse)
+library(Seurat)
+library(cluster)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+```
+
+## Prepare functions
+
+### Chea function
+```{r}
+library(httr)
+library(jsonlite)
+
+chea3 <- function(genes){							
+									
+url = "https://maayanlab.cloud/chea3/api/enrich/"
+encode = "json"
+payload = list(query_name = "myQuery", gene_set = genes)
+									
+#POST to ChEA3 server
+response = POST(url = url, body = payload, encode = encode)
+json = httr::content(response, "text")
+									
+#results as list of R dataframes
+results = fromJSON(json)
+return(results)
+}
+```
+
+## Load preprocessed data
+```{r}
+# Seurat objects
+so_pac <- readRDS('deps/240327_so_pac.rds')
+
+so_ligand <- readRDS('deps/240327_so_ligand.rds')
+
+Idents(so_ligand) <- 'condition'
+
+so_ifn <- subset(so_ligand,
+                 subset = condition %in% c('PBS', 'IFNB', 'IFNG'))
+
+so_ifn <- CellCycleScoring(so_ifn,
+                           s.features = cc.genes$s.genes,
+                           g2m.features = cc.genes$g2m.genes)
+
+# DEGs
+deg_tib <- read_csv('deps/240328_pac_ligand_degs.csv')
+
+pac24.markers <- deg_tib %>%
+  filter(ident.1 == 'PTX_24' & ident.2 == 'DMSO_24')
+pac72.markers <- deg_tib %>%
+  filter(ident.1 == 'PTX_72' & ident.2 == 'DMSO_72')
+ifnb.markers <- deg_tib %>%
+  filter(ident.1 == 'IFNB' & ident.2 == 'PBS')
+ifng.markers <- deg_tib %>%
+  filter(ident.1 == 'IFNG' & ident.2 == 'PBS')
+dmso72.markers <- deg_tib %>%
+  filter(ident.1 == 'DMSO_72' & ident.2 == 'DMSO_24')
+
+# set up color dictionary
+ptx_cols <- tibble(condition = c('DMSO_24', 'DMSO_72', 'PTX_24', 'PTX_72'),
+                   colors = scico::scico(n = 8, palette = 'bam')[c(6,7,3,2)])
+
+# Previously used colors
+#c('#a6d96a', '#1a9641', '#fdae61', '#d7191c')
+```
+
+### Ave expression of siRNA target over cell cycle
+
+```{r}
+so_pac@meta.data$treatment_phase <- paste0(so_pac@meta.data$treatment, '-', so_pac@meta.data$Phase)
+
+sirna_feat <- c('FOSL1', 'ELF3', 'NFE2L2', 'IRF7', 'IRF9', 'PLK1')
+
+aves <- AverageExpression(so_pac, features = sirna_feat, group.by = 'treatment_phase')
+
+avesg <- aves$RNA %>%
+  as_tibble() %>%
+  mutate(gene = row.names(aves$RNA)) %>%
+  gather(-gene, key = 'treatment_phase', value = 'mean_expression') %>%
+  mutate(condition = str_split(treatment_phase, pattern = '-', simplify = TRUE)[,1],
+         time = str_split(treatment_phase, pattern = '-', simplify = TRUE)[,2],
+         phase = str_split(treatment_phase, pattern = '-', simplify = TRUE)[,3]) %>%
+  mutate(treatment = paste0(condition, '_', time)) %>%
+  mutate(phase = factor(phase, levels = c('G1', 'S', 'G2M')))
+
+ggplot(avesg, aes(x = phase, y = mean_expression, fill = paste0(condition,
+                                                                '_',
+                                                                time)))+
+  geom_col(position = 'dodge')+
+  facet_wrap(~gene)+
+  mytheme()+
+  RotatedAxis()
+
+ggplot(avesg, aes(x = phase,
+                  y = mean_expression,
+                  color = treatment,
+       group = treatment))+
+  geom_line(position = 'dodge', size = 2)+
+  facet_wrap(~gene)+
+  mytheme()+
+  RotatedAxis()
+
+DotPlot(so_pac,
+        features = sirna_feat,
+        group.by = 'treatment',
+        split.by = 'Phase',
+        cols = 'RdYlBu')+
+  RotatedAxis()
+```
+
+
+## Panel 2A: UMAP of scRNA-seq
+
+720x480
+
+```{r}
+so_pac@meta.data$treatment <- plyr::mapvalues(x = so_pac@meta.data$treatment,
+                                              from = c('LH2400_realigned', 'LH2401_realigned', 'LH7200_realigned', 'LH7201_realigned'),
+                                              to = c('DMSO_24', 'PTX_24', 'DMSO_72', 'PTX_72'))
+
+f2a <- DimPlot(so_pac,
+        group.by = 'treatment',
+        pt.size = 0.25,
+        label = FALSE,
+        cols = ptx_cols$colors,
+        shuffle = TRUE)+
+  coord_equal()+
+  mytheme()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.key.size = unit(0.05, 'cm'),
+        legend.position = 'top',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())+
+  ggtitle('2A: UMAP by condition')
+
+f2a
+
+ggsave(filename = paste0(fig_dir, 'figure_2a', figure_suffix),
+       plot = f2a,
+       width = 3,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+```
+
+## 2B: Cellcycle barplot
+
+360 x 540 
+
+```{r}
+so_pac <- CellCycleScoring(so_pac,
+                           s.features = cc.genes$s.genes,
+                           g2m.features = cc.genes$g2m.genes,
+                           set.ident = FALSE)
+
+cc_count <- so_pac@meta.data %>%
+  group_by(treatment, Phase) %>%
+  summarize(count = n())
+
+f2b <- ggplot(so_pac@meta.data, aes(x = treatment, fill = factor(Phase, levels = c('G1', 'S', 'G2M'))))+
+  geom_bar(position = 'fill', color = 'black')+
+  ylab('Fraction')+
+  xlab('Condition')+
+  ggtitle('2B: Cell cycle assignment')+
+  mytheme()+
+  theme(legend.key.size = unit(0.25, 'cm'))+
+  RotatedAxis()+
+  scale_fill_manual(values = cc_dict$color)+
+  labs(fill = 'Phase')
+
+f2b
+
+ggsave(filename = paste0(fig_dir, 'figure_2b', figure_suffix),
+       plot = f2b,
+       width = 2.5,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+## Figure 2C/D: PTX 24 vs DMSO 24
+
+volcano: 480 x 540
+emapplot: 720 x 720
+
+```{r}
+mt.genes <- grep(row.names(so_pac),
+                 pattern = '^MT-',
+                 value = TRUE)
+
+ribo.genes <- grep(row.names(so_pac),
+                 pattern = '^RP',
+                 value = TRUE)
+
+# Volcano plot
+pac24.sig <- pac24.markers %>%
+  filter(abs(avg_log2FC) >= 0.5) %>%
+  filter(p_val_bh <= 0.01)
+
+f2c <- ggplot(pac24.markers, aes(x = avg_log2FC, y = -log10(p_val_bh), label = gene))+
+  geom_point(color = 'gray50', alpha = 0.7, size = 0.5)+
+  geom_point(data = pac24.sig %>% filter(avg_log2FC < 0), aes(x = avg_log2FC, y = -log10(p_val_bh)), color = ptx_cols$colors[1], alpha = 0.7, size = 0.5)+
+  geom_point(data = pac24.sig %>% filter(avg_log2FC > 0), aes(x = avg_log2FC, y = -log10(p_val_bh)), color = ptx_cols$colors[3], alpha = 0.7, size = 0.5)+
+  ggrepel::geom_text_repel(data = pac24.sig, aes(x = avg_log2FC, y = -log10(p_val_bh), label = gene),
+                           max.overlaps = 10,
+                           min.segment.length = 0.1,
+                           size = 2,
+                           segment.size = 0.25)+
+  xlab('Average Log2 fold-change')+
+  ylab('Significance \n (-log10(adjusted p value))')+
+  ggtitle('2C: PTX vs DMSO at 24 Hours')+
+  geom_hline(yintercept = -log10(0.01), linetype = 'dashed', size = 0.5)+
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = 'dashed', size = 0.5)+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# Reactome pathway analysis dotplot
+
+pac24_top <- pac24.sig %>%
+  filter(! gene %in% c(mt.genes, ribo.genes)) %>%
+  filter(avg_log2FC >= 0.5)
+
+pac24_top_entrez <- clusterProfiler::bitr(geneID = pac24_top$gene,
+                                          fromType = 'SYMBOL',
+                                          toType = 'ENTREZID',
+                                          OrgDb = org.Hs.eg.db)
+
+p24_pa <- ReactomePA::enrichPathway(gene = pac24_top_entrez$ENTREZID)
+
+p24_pa_results <- p24_pa@result %>%
+  mutate(generatio_numerator = as.numeric(str_split(GeneRatio, pattern = '/', simplify = TRUE)[,1])) %>%
+  mutate(generatio_denominator = as.numeric(str_split(GeneRatio, pattern = '/', simplify = TRUE)[,2])) %>%
+  mutate(generatio_decimal = generatio_numerator/generatio_denominator)
+
+f2d <- ggplot(p24_pa_results %>%
+         filter(p.adjust < 0.05) %>%
+         arrange(desc(generatio_decimal)) %>%
+         slice_head(n = 10) %>%
+         mutate(Description = factor(Description,
+                                     levels = rev(Description))),
+       aes(x = generatio_decimal, y = Description, color = p.adjust, size = Count))+
+  geom_point()+
+  ggtitle('2D: Reactome enrichment \n PTX vs DMSO at 24Hrs')+
+  mytheme()+
+  theme(legend.key.size = unit(0.25, 'cm'),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_text(size = 7))+
+  xlab('Gene Ratio')+
+  xlim(0.05,0.25)+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 50))+
+  RotatedAxis()+
+  scale_color_gradient(low = 'red', high = 'black')+
+  scale_size(breaks = c(3,5,7))+
+  ylab('Pathway')
+
+f2c
+
+f2d
+
+ggsave(filename = paste0(fig_dir, 'figure_2c', figure_suffix),
+       plot = f2c,
+       width = 3,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+ggsave(filename = paste0(fig_dir, 'figure_2d', figure_suffix),
+       plot = f2d,
+       width = 4.5,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# Pull neutrophil degran reltaed genes
+
+neut_degran <- p24_pa_results$geneID[which(p24_pa_results$Description == 'Neutrophil degranulation')] %>%
+  str_split(., pattern = '/', simplify = TRUE) %>% 
+  unlist()
+
+pac24_top_entrez %>% filter(ENTREZID %in% neut_degran)
+
+```
+
+## Figure 2E/F: PTX 72 vs DMSO 72
+
+```{r}
+pac72.sig <- pac72.markers %>%
+  filter(abs(avg_log2FC) >= 0.5) %>%
+  filter(p_val_bh <= 0.01)
+
+f2e <- ggplot(pac72.markers, aes(x = avg_log2FC, y = -log10(p_val_bh), label = gene))+
+  theme_bw()+
+  geom_point(color = 'gray50', alpha = 0.7, size = 0.5)+
+  geom_point(data = pac72.sig %>% filter(avg_log2FC < 0), aes(x = avg_log2FC, y = -log10(p_val_bh)), color = ptx_cols$colors[2], alpha = 0.7, size = 0.5)+
+  geom_point(data = pac72.sig %>% filter(avg_log2FC > 0), aes(x = avg_log2FC, y = -log10(p_val_bh)), color = ptx_cols$colors[4], alpha = 0.7, size = 0.5)+
+  ggrepel::geom_text_repel(data = pac72.sig, aes(x = avg_log2FC, y = -log10(p_val_bh), label = gene),
+                           max.overlaps = 10,
+                           min.segment.length = 0.1,
+                           size = 2,
+                           segment.size = 0.25)+
+  xlab('Average Log2 fold-change')+
+  ylab('Significance \n (-log10(adjusted p value))')+
+  ggtitle('2E: PTX vs DMSO at 72 Hours')+
+  geom_hline(yintercept = -log10(0.01), linetype = 'dashed', size = 0.5)+
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = 'dashed', size = 0.5)+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+# Reactome pathway analysis dotplot
+
+pac72_top <- pac72.sig  %>%
+  filter(! gene %in% c(mt.genes, ribo.genes)) %>%
+  filter(avg_log2FC >= 0.5)
+
+pac72_top_entrez <- clusterProfiler::bitr(geneID = pac72_top$gene,
+                                          fromType = 'SYMBOL',
+                                          toType = 'ENTREZID',
+                                          OrgDb = org.Hs.eg.db)
+
+p72_pa <- ReactomePA::enrichPathway(gene = pac72_top_entrez$ENTREZID)
+
+p72_pa_results <- p72_pa@result %>%
+  mutate(generatio_numerator = as.numeric(str_split(GeneRatio, pattern = '/', simplify = TRUE)[,1])) %>%
+  mutate(generatio_denominator = as.numeric(str_split(GeneRatio, pattern = '/', simplify = TRUE)[,2])) %>%
+  mutate(generatio_decimal = generatio_numerator/generatio_denominator)
+
+f2f <- ggplot(p72_pa_results %>%
+         filter(p.adjust < 0.05) %>%
+         arrange(desc(generatio_decimal)) %>%
+         slice_head(n = 10) %>%
+         mutate(Description = factor(Description,
+                                     levels = rev(Description))),
+       aes(x = generatio_decimal, y = Description, color = p.adjust, size = Count))+
+  geom_point()+
+  mytheme()+
+  ggtitle('2F: Reactome enrichment \n PTX vs DMSO at 72Hrs')+
+  theme(legend.key.size = unit(0.25, 'cm'),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_text(size = 7))+
+  xlab('Gene Ratio')+
+  xlim(0.075,0.16)+
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 50))+
+  RotatedAxis()+
+  scale_color_gradient(low = 'red', high = 'black')+
+  scale_size(breaks = c(18,22,26))+
+  ylab('Pathway')
+
+
+f2e
+
+f2f
+
+ggsave(filename = paste0(fig_dir, 'figure_2e', figure_suffix),
+       plot = f2e,
+       width = 3,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+ggsave(filename = paste0(fig_dir, 'figure_2f', figure_suffix),
+       plot = f2f,
+       width = 4.5,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+neut_degran <- p72_pa_results$geneID[which(p72_pa_results$Description == 'Neutrophil degranulation')] %>%
+  str_split(., pattern = '/', simplify = TRUE) %>% 
+  unlist()
+
+pac72_top_entrez %>% filter(ENTREZID %in% neut_degran)
+
+```
+
+
+# Supplemental figure 2
+
+## SF2A: scRNA-seq QC metrics
+
+```{r}
+sf2a_1 <- ggplot(so_pac@meta.data,
+                 aes(x = treatment, y = nCount_RNA, fill = treatment))+
+  geom_violin(linewidth = 0.25, draw_quantiles = c(0.25, 0.5, 0.75))+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = 'none')+
+  scale_fill_manual(values = ptx_cols$colors)+
+  RotatedAxis()+
+  ylab('Number of UMI')
+
+sf2a_2 <- ggplot(so_pac@meta.data,
+                 aes(x = treatment, y = nFeature_RNA, fill = treatment))+
+  geom_violin(linewidth = 0.25, draw_quantiles = c(0.25, 0.5, 0.75))+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = 'none')+
+  scale_fill_manual(values = ptx_cols$colors)+
+  RotatedAxis()+
+  ylab('Number of unique features')
+
+sf2a_3 <- ggplot(so_pac@meta.data,
+                 aes(x = treatment, y = percent.mt, fill = treatment))+
+  geom_violin(linewidth = 0.25, draw_quantiles = c(0.25, 0.5, 0.75))+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = 'none')+
+  scale_fill_manual(values = ptx_cols$colors)+
+  RotatedAxis()+
+  ylab('Percent mitochondrial UMI')
+
+
+sf2a <- gridExtra::grid.arrange(sf2a_1, sf2a_2, sf2a_3,
+                     ncol = 3,
+                     top = text_grob(label = 'S2A: scRNA-seq QC metrics',
+                                     size = title_size))
+
+sf2a
+
+ggsave(filename = paste0(fig_dir, 'sf_2a', figure_suffix),
+       plot = sf2a,
+       width = 7,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+
+## SF2B:
+
+```{r}
+# UMAP by phase
+
+so_pac_meta <- so_pac@meta.data %>%
+  mutate(UMAP_1 = so_pac@reductions$umap@cell.embeddings[,1],
+         UMAP_2 = so_pac@reductions$umap@cell.embeddings[,2])
+
+sf2b <- ggplot(so_pac_meta, aes(x = UMAP_1, y = UMAP_2, color = factor(Phase, levels = c('G1', 'S', 'G2M'))))+
+  geom_point(size = 0.25)+
+  facet_wrap(~treatment)+
+  coord_equal()+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = 'top')+
+  ggtitle('S2B: Cell cycle phase by treatment')+
+  guides(color = guide_legend(override.aes = list(size = 2)))+
+  scale_color_manual(values = cc_dict$color)+
+  labs(color = 'Phase')
+
+
+sf2b
+
+ggsave(filename = paste0(fig_dir, 'sf_2b', figure_suffix),
+       plot = sf2b,
+       width = 4,
+       height = 4,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+
+## SF2C/D:
+
+```{r}
+# Upreg genes upset plot
+library(UpSetR)
+library(grid)
+library(eulerr)
+
+ptx_deg_up_list <- list(PTX_24 = pac24.sig %>%
+                          filter(avg_log2FC > 0.5 & p_val_bh < 0.05) %>%
+                          dplyr::select(gene) %>%
+                          pull(),
+                        PTX_72 = pac72.sig %>%
+                          filter(avg_log2FC > 0.5 & p_val_bh < 0.05) %>%
+                          dplyr::select(gene) %>%
+                          pull())
+
+
+sf2c.euler <- euler(ptx_deg_up_list)
+
+sf2c_plot <- plot(sf2c.euler,
+                  labels = list(cex = 0.5),
+                  quantities = list(cex = 0.5),
+                  fills = ptx_cols$colors[3:4])
+
+sf2c <- gridExtra::grid.arrange(sf2c_plot,
+                                top = text_grob(label = 'S2C: Overlap in significantly \n upregulated genes',
+                                                size = title_size))
+
+
+ggsave(filename = paste0(fig_dir, 'sf_2c', figure_suffix),
+       plot = sf2c,
+       width = 2.5,
+       height = 2,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# Upreg reactome pathways upset plot
+
+ptx_reactomepa_list <- list(ptx24 = p24_pa@result %>%
+                          filter(p.adjust < 0.05) %>%
+                          dplyr::select(ID) %>%
+                          pull(),
+                        ptx72 = p72_pa@result %>%
+                          filter(p.adjust < 0.05) %>%
+                          dplyr::select(ID) %>%
+                          pull())
+
+sf2d.euler <- euler(ptx_reactomepa_list)
+
+sf2d_plot <- plot(sf2d.euler,
+                  labels = list(cex = 0.5),
+                  quantities = list(cex = 0.5),
+                  fills = ptx_cols$colors[3:4])
+
+sf2d <- gridExtra::grid.arrange(sf2d_plot,
+                                top = text_grob(label = 'S2D: Overlap in significantly \nenriched Reactome pathways',
+                                                size = title_size))
+
+
+ggsave(filename = paste0(fig_dir, 'sf_2d', figure_suffix),
+       plot = sf2d,
+       width = 2.5,
+       height = 2,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+## SF2G
+
+```{r}
+p24_kines <- grep(pac24.sig$gene, pattern = '^IL|^CCL|^CXCL', value = TRUE)
+p72_kines <- grep(pac72.sig$gene, pattern = '^IL|^CCL|^CXCL', value = TRUE)
+
+intersect(p24_kines, p72_kines)
+
+kines_ave <- AverageExpression(so_pac, features = intersect(p24_kines, p72_kines), group = 'treatment')$RNA
+
+pheatmap::pheatmap(kines_ave, scale = 'row', cluster_cols = FALSE)
+
+kines_tib <- as_tibble(kines_ave) %>%
+  mutate(gene = row.names(kines_ave)) %>%
+  gather(-gene, key = 'treatment', value = 'expression')
+
+sf2e <- ggplot(kines_tib, aes(x = treatment, y = expression, fill = treatment))+
+  geom_col()+
+  facet_wrap(~gene)+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'none')+
+  ylab('Normalized Expression')+
+  xlab('')+
+  scale_fill_manual(values = ptx_cols$colors)+
+  ggtitle('S2E: Shared upregulated chemokines')
+
+sf2e
+
+ggsave(filename = paste0(fig_dir, 'sf_2e', figure_suffix),
+       plot = sf2e,
+       width = 3,
+       height = 2.25,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+
+# Figure 3: 
+
+## 3A: UMAP
+
+```{r}
+f3a <- DimPlot(so_ligand,
+        group.by = 'condition',
+        pt.size = 0.25,
+        label = TRUE,
+        shuffle = TRUE,
+        label.box = TRUE,
+        repel = TRUE,
+        label.size = 2,
+        cols = scico::scico(n = length(unique(so_ligand@meta.data$condition)),
+                            palette = 'roma'))+
+  coord_equal()+
+  mytheme()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.key.size = unit(0.05, 'cm'),
+        legend.position = 'none',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())+
+  ggtitle('3A: UMAP by condition')
+
+f3a
+
+ggsave(filename = paste0(fig_dir, 'figure_3a', figure_suffix),
+       plot = f3a,
+       width = 4,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+f3a2 <- DimPlot(so_ligand,
+        group.by = 'condition',
+        pt.size = 0.25,
+        label = FALSE,
+        shuffle = TRUE,
+        label.box = FALSE,
+        repel = TRUE)+
+  coord_equal()+
+  mytheme()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.key.size = unit(0.05, 'cm'),
+        legend.position = 'top',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())+
+  ggtitle('3A: UMAP by condition')+
+  scico::scale_color_scico_d(palette = 'roma')
+
+f3a2
+
+ggsave(filename = paste0(fig_dir, 'figure_3a2', figure_suffix),
+       plot = f3a2,
+       width = 4,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# Compute NMI between cluster and condition 
+so_ligand <- FindClusters(so_ligand, resolution = 0.3)
+aricode::NMI(so_ligand@meta.data$seurat_clusters,
+             so_ligand@meta.data$condition)
+```
+
+## 3B: Heatmap of perturbation similarity
+
+```{r}
+deg_wide <- deg_tib %>%
+  filter(! ident.1 %in% c('PTX_24', 'DMSO_72', 'NOTCHi_IFNB')) %>%
+  group_by(ident.1) %>%
+  dplyr::select(gene, ident.1, avg_log2FC) %>%
+  spread(key = ident.1, value = avg_log2FC)
+
+deg_cor <- cor(deg_wide[,-1])
+
+pheatmap::pheatmap(deg_cor,
+                   display_numbers = FALSE,
+                   treeheight_row = 10,
+                   treeheight_col = 10,
+                   main = '',
+                   fontsize = 8,
+                   cellwidth = 18,
+                   cellheight = 18,
+                   border_color = NA,
+                   width = 3,
+                   height = 3,
+                   filename = paste0(fig_dir, '/figure_3b', figure_suffix))
+
+# title: "3B: Perturbation Correlation'
+
+deg_cor_tib <- data.frame(deg_cor) %>%
+  mutate(perturb1 = row.names(.)) %>%
+  gather(-perturb1, key = 'perturb2', value = 'correlation')
+
+ggplot(deg_cor_tib, aes(x = perturb1, y = perturb2, fill = correlation))+
+  geom_tile()+
+  scico::scale_fill_scico(palette = 'batlow')
+```
+
+## Filter significant genes
+
+```{r}
+# Find significantly upregulated genes
+lfc_thresh <- 0.5
+
+pac72.up <- pac72.markers %>%
+  filter(avg_log2FC > lfc_thresh & p_val_bh < 0.05)
+ifnb.up <- ifnb.markers %>%
+  filter(avg_log2FC > lfc_thresh & p_val_bh < 0.05)
+ifng.up <- ifng.markers %>%
+  filter(avg_log2FC > lfc_thresh & p_val_bh < 0.05)
+
+# Find uniquely versus shared upregulated genes
+pac72.unique <- pac72.up %>%
+  filter(gene %in% pac72.up$gene) %>%
+  filter(! gene %in% c(ifnb.up$gene, ifng.up$gene))
+
+pac72.shared <- pac72.up %>%
+  filter(gene %in% pac72.up$gene) %>%
+  filter( gene %in% c(ifnb.up$gene, ifng.up$gene))
+```
+
+## 3C: Heatmap of PTX shared upregulated pathways 
+
+```{r, fig.asp = 1}
+pac72.unique.ego <- enrichGO(gene = pac72.unique$gene,
+                OrgDb = org.Hs.eg.db,
+                keyType = 'SYMBOL',
+                ont = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff = 0.01,
+                qvalueCutoff = 0.05)
+
+pac72.unique.genes <- pac72.unique$avg_log2FC
+names(pac72.unique.genes) <- pac72.unique$gene
+pac72.unique.genes <- sort(pac72.unique.genes, decreasing = TRUE)
+
+pac72.unique.ego <- pairwise_termsim(pac72.unique.ego)
+ 
+# Identify top enriched ontologies and filter to remove redundantly enriched sets
+pac72.unique.top <- pac72.unique.ego@result %>%
+  group_by(geneID) %>%
+  filter(pvalue == min(pvalue)) %>%
+  ungroup() %>%
+  arrange(p.adjust) %>%
+  slice_head(n = 15) %>%
+  arrange(desc(Count))
+
+dotplot(pac72.unique.ego, showCategory = pac72.unique.top$Description)
+
+# Heatplot for unique gene sets
+
+f3c <- heatplot(pac72.unique.ego, showCategory = pac72.unique.top$Description[1:5], foldChange = pac72.unique.genes)+
+  ggplot2::scale_fill_gradientn(colors = brewer.pal(n = 9, 'Reds'), limits = c(0, 2.5))+
+  ggplot2::guides(fill=guide_legend(title="Log2FC"))+
+  ggtitle('3C: Paclitaxel uniquely enriched ontologies')+
+  mytheme()+
+  theme(legend.key.size = unit(0.25, 'cm'),
+      axis.text.x = element_text(angle = 90, hjust = 1, size = 5),
+      axis.text.y = element_text(size = 5),
+      legend.position = 'top')
+
+f3c
+
+ggsave(filename = paste0(fig_dir, 'figure_3c', figure_suffix),
+       plot = f3c,
+       width = 3.75,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+barplot(pac72.unique.ego, showCategory = 10)
+
+
+pac72.unique.top2 <- pac72.unique.ego@result %>%
+  group_by(ONTOLOGY) %>%
+  filter(Count >= 5) %>%
+  arrange(desc(qvalue)) %>%
+  slice_head(n = 3)
+
+ggplot(pac72.unique.top2 %>% arrange(Count) %>% mutate(Description = factor(Description, levels = .$Description)), aes(x = Count, y = Description, fill = -log10(p.adjust)))+
+  geom_col()+
+  mytheme()+
+  facet_grid(ONTOLOGY~., scales = 'free_y', space = 'free_y')
+
+emapplot(pac72.unique.ego, showCategory = 15, cex.params = list(category_label = 0.5))+
+  ggtitle('3C: PTX uniquely enriched ontologies')
+
+f3c_2 <- emapplot(pac72.unique.ego, showCategory = 10, cex.params = list(category_label = 0.65), repel = TRUE)+
+  ggtitle('3C: PTX uniquely enriched ontologies')
+
+f3c_2
+
+# Scale 1:2 for figure placement - text size adjustment was weird for this one
+ggsave(filename = paste0(fig_dir, 'figure_3c2', figure_suffix),
+       plot = f3c_2,
+       width = 5,
+       height = 4,
+       device=figure_device,
+       dpi=250)
+```
+
+## 3D Heatmap of PTX unique upregulated pathways
+
+```{r, fig.asp = 0.75}
+pac72.shared.ego <- enrichGO(gene = pac72.shared$gene,
+                OrgDb = org.Hs.eg.db,
+                keyType = 'SYMBOL',
+                ont = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff = 0.01,
+                qvalueCutoff = 0.05)
+
+pac72.shared.genes <- pac72.shared$avg_log2FC
+names(pac72.shared.genes) <- pac72.shared$gene
+pac72.shared.genes <- sort(pac72.shared.genes, decreasing = TRUE)
+
+pac72.shared.ego <- pairwise_termsim(pac72.shared.ego)
+
+#emapplot(pac72.shared.ego, showCategory = pac72.shared.top$Description)
+ 
+# Identify top enriched ontologies and filter to remove redundantly enriched sets
+pac72.shared.top <- pac72.shared.ego@result %>%
+  group_by(geneID) %>%
+  filter(pvalue == min(pvalue)) %>%
+  ungroup() %>%
+  arrange(p.adjust) %>%
+  slice_head(n = 15) %>%
+  arrange(desc(Count))
+
+dotplot(pac72.shared.ego, showCategory = pac72.shared.top$Description)
+
+# Heatplot for shared gene sets
+
+f3d <- heatplot(pac72.shared.ego, showCategory = pac72.shared.top$Description[1:5], foldChange = pac72.shared.genes)+
+  ggplot2::scale_fill_gradientn(colors = brewer.pal(n = 9, 'Reds'), limits = c(0, 2.5))+
+  ggplot2::guides(fill=guide_legend(title="Log2FC"))+
+  ggtitle('3D: Paclitaxel shared enriched ontologies')+
+  mytheme()+
+  theme(legend.key.size = unit(0.25, 'cm'),
+      axis.text.x = element_text(angle = 90, hjust = 1, size = 5),
+      axis.text.y = element_text(size = 5),
+      legend.position = 'top')
+
+f3d
+
+ggsave(filename = paste0(fig_dir, 'figure_3d', figure_suffix),
+       plot = f3d,
+       width = 3.75,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+set.seed(2)
+f3d_2 <- emapplot(pac72.shared.ego, showCategory = 10, cex.params = list(category_label = 0.55), repel = TRUE, layout = 'kk')+
+  ggtitle('3D: PTX+IFN Shared enriched ontologies')
+
+f3d_2
+
+ggsave(filename = paste0(fig_dir, 'figure_3d2', figure_suffix),
+       plot = f3d_2,
+       width = 5,
+       height = 4,
+       device=figure_device,
+       dpi=dpi_figures)
+
+ggsave(filename = paste0(fig_dir, 'figure_3d2', '.tiff'),
+       plot = f3d_2,
+       width = 5,
+       height = 4,
+       device='tiff',
+       dpi=dpi_figures)
+
+pac72.shared.top2 <- pac72.shared.ego@result %>%
+  group_by(ONTOLOGY) %>%
+  filter(Count >= 5) %>%
+  arrange(desc(qvalue)) %>%
+  slice_head(n = 3)
+
+ggplot(pac72.shared.top2 %>% arrange(Count) %>% mutate(Description = factor(Description, levels = .$Description)), aes(x = Count, y = Description, fill = -log10(p.adjust)))+
+  geom_col()+
+  mytheme()+
+  facet_grid(ONTOLOGY~., scales = 'free_y', space = 'free_y')
+```
+
+### 05/30 : alternative plot showing JI of terms
+
+```{r, fig.asp = 1}
+pac72.unique.filt <- pac72.unique.ego@result %>%
+  group_by(geneID) %>%
+  filter(pvalue == min(pvalue)) %>%
+  ungroup() %>%
+  arrange(p.adjust) %>%
+  slice_head(n = 15) %>%
+  filter(qvalue < 0.05) %>%
+  mutate(desc_short = ifelse(nchar(Description) < 20,
+                             Description,
+                             paste0(substr(Description, start = 1, stop = 20), '...'))) %>%
+  mutate(desc_short = make.unique(desc_short))
+
+pac72.unique.list <- list()
+
+for(i in 1:nrow(pac72.unique.filt)){
+  pac72.unique.list[[pac72.unique.filt$desc_short[i]]] <- c(str_split(string = pac72.unique.filt$geneID[i],
+                                                                        pattern = '/',
+                                                                        simplify = TRUE))
+}
+
+ji_mat <- matrix(data = NA,
+                 nrow = length(pac72.unique.list),
+                 ncol = length(pac72.unique.list),
+                 dimnames = list(rownames = names(pac72.unique.list),
+                                 colnames = names(pac72.unique.list)))
+
+for(i in 1:nrow(ji_mat)){
+  for(j in 1:nrow(ji_mat)){
+    curr_ji <- length(intersect(pac72.unique.list[[i]],
+                                pac72.unique.list[[j]]))/length(union(pac72.unique.list[[i]],
+                                                                        pac72.unique.list[[j]]))
+    ji_mat[i,j] <- curr_ji
+  }
+}
+
+row_anno <- data.frame(`-log10(FDR)` = -log10(pac72.unique.filt$qvalue),
+                       row.names = pac72.unique.filt$desc_short,
+                       check.names = FALSE)
+
+
+pheatmap::pheatmap(ji_mat,
+                   labels_col = str_remove(colnames(ji_mat), '.1'),
+                   show_rownames = FALSE,
+                   cluster_cols = TRUE,
+                   cluster_rows = TRUE,
+                   color = viridis::inferno(100),
+                   main = '3C: PTX unique enriched ontologies \n (Jaccard Index)',
+                   annotation_col = row_anno,
+                   treeheight_row = 0,
+                   treeheight_col = 10,
+                   cellwidth = 11,
+                   cellheight = 11,
+                   fontsize = 6,
+                   border_color = NA,
+                   width = 3.75,
+                   height = 3.75,
+                   angle_col = 315,
+                   annotation_names_col = FALSE,
+                   filename = paste0(fig_dir, '/figure_3c3', figure_suffix))
+```
+
+```{r, fig.asp = 1}
+pac72.shared.filt <- pac72.shared.ego@result  %>%
+  group_by(geneID) %>%
+  filter(pvalue == min(pvalue)) %>%
+  ungroup() %>%
+  arrange(p.adjust) %>%
+  slice_head(n = 15) %>%
+  filter(qvalue < 0.05) %>%
+  mutate(desc_short = ifelse(nchar(Description) < 20,
+                             Description,
+                             paste0(substr(Description, start = 1, stop = 20), '...'))) %>%
+  mutate(desc_short = make.unique(desc_short))
+
+pac72.shared.list <- list()
+
+for(i in 1:nrow(pac72.shared.filt)){
+  pac72.shared.list[[pac72.shared.filt$desc_short[i]]] <- c(str_split(string = pac72.shared.filt$geneID[i],
+                                                                        pattern = '/',
+                                                                        simplify = TRUE))
+}
+
+ji_mat <- matrix(data = NA,
+                 nrow = length(pac72.shared.list),
+                 ncol = length(pac72.shared.list),
+                 dimnames = list(rownames = names(pac72.shared.list),
+                                 colnames = names(pac72.shared.list)))
+
+for(i in 1:nrow(ji_mat)){
+  for(j in 1:nrow(ji_mat)){
+    curr_ji <- length(intersect(pac72.shared.list[[i]],
+                                pac72.shared.list[[j]]))/length(union(pac72.shared.list[[i]],
+                                                                        pac72.shared.list[[j]]))
+    ji_mat[i,j] <- curr_ji
+  }
+}
+
+row_anno <- data.frame(`-log10(FDR)` = -log10(pac72.shared.filt$qvalue),
+                       row.names = pac72.shared.filt$desc_short,
+                       check.names = FALSE)
+
+
+pheatmap::pheatmap(ji_mat,
+                   labels_col = str_remove(colnames(ji_mat), '.1'),
+                   show_colnames = TRUE,
+                   show_rownames = FALSE,
+                   cluster_cols = TRUE,
+                   cluster_rows = TRUE,
+                   color = viridis::inferno(100),
+                   main = '3D: PTX+IFN shared enriched ontologies \n (Jaccard Index)',
+                   annotation_col = row_anno,
+                   treeheight_row = 0,
+                   treeheight_col = 10,
+                   cellwidth = 11,
+                   cellheight = 11,
+                   fontsize = 6,
+                   border_color = NA,
+                   width = 3.75,
+                   height = 3.75,
+                   angle_col = 315,
+                   annotation_names_col = FALSE,
+                   filename = paste0(fig_dir, '/figure_3d3', figure_suffix))
+```
+
+
+## 3E: CHEA3 TF enrichment
+
+```{r}
+# Run CHEA3
+pac72.unique.chea <- chea3(pac72.unique$gene)
+pac72.shared.chea <- chea3(pac72.shared$gene)
+
+# Combine results
+unique.shared.chea <- full_join(x = pac72.unique.chea$`Integrated--meanRank`,
+                                y = pac72.shared.chea$`Integrated--meanRank`,
+                                by = 'TF',
+                                suffix = c('.unique', '.shared'))
+
+unique.shared.chea <- unique.shared.chea %>%
+  mutate(rank_diff = as.numeric(Rank.unique) - as.numeric(Rank.shared)) %>%
+  mutate(score_diff = as.numeric(Score.unique) - as.numeric(Score.shared))
+
+unique.shared.chea.top <- unique.shared.chea %>%
+  filter(as.numeric(Rank.unique) <= 15 | as.numeric(Rank.shared) <= 15)
+
+# Visualize
+
+f3e <- ggplot(unique.shared.chea, aes(x = as.numeric(Rank.unique), y = as.numeric(Rank.shared)))+
+  geom_abline(intercept = 0, slope = 1, linewidth = 0.5, color = 'black', alpha = 0.8, linetype = 'dashed')+
+  geom_point(size = 0.25, color = 'gray60', alpha = 0.5)+
+  ggrepel::geom_text_repel(data = unique.shared.chea.top, aes(x = as.numeric(Rank.unique), y = as.numeric(Rank.shared), label = TF), size = 1.5, box.padding = 0.1, segment.size = 0.25, min.segment.length = unit(0.01, 'cm'))+
+  geom_point(data = unique.shared.chea.top, aes(x = as.numeric(Rank.unique), y = as.numeric(Rank.shared)), color = 'red', size = 0.25)+
+  xlab('PTX Uniquely upregulated genes\nChEA3 rank')+
+  ylab('PTX & IFN upregulated genes\nChEA3 rank')+
+  coord_equal()+
+  scale_x_log10()+
+  scale_y_log10()+
+  ggtitle('3E: Enriched Transcription Factors')+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+f3e
+
+ggsave(filename = paste0(fig_dir, 'figure_3e', figure_suffix),
+       plot = f3e,
+       width = 3,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+## 3F: Differential expression for top CHEA3 TFs
+
+```{r}
+chea_degs <- deg_tib %>%
+  filter(ident.1 %in% c('PTX_24', 'PTX_72')) %>%
+  filter(gene %in% unique.shared.chea.top$TF) %>%
+  mutate(condition = ident.1)
+
+gene_order <- chea_degs %>%
+  filter(ident.1 == 'PTX_72') %>%
+  arrange(avg_log2FC) %>%
+  dplyr::select(gene) %>%
+  pull()
+
+chea3_gene_color <- chea_degs %>%
+  mutate(gene = factor(gene, levels = gene_order)) %>%
+  group_by(gene) %>%
+  summarize(max_log2fc = max(avg_log2FC)) %>%
+  mutate(color = ifelse(max_log2fc > 0.25,
+                        'red',
+                        'black'))
+
+f3f <- ggplot(chea_degs , aes(x = factor(gene, level = gene_order), y = avg_log2FC, fill = condition))+
+  geom_hline(yintercept = 0, linewidth = 0.25, alpha = 0.5)+
+  geom_hline(yintercept = 0.25, linetype = 'dashed', linewidth = 0.25)+
+  geom_col(position = 'dodge')+
+  scale_fill_manual(values = ptx_cols$colors[3:4])+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top',
+        axis.text.x = element_text(size = 6,
+                                   color = chea3_gene_color$color))+
+  ggtitle('3F: Differential expression for top CHEA3 TFs')+
+  ylab('Differential Expression \n (Log2FC from control)')+
+  xlab('CHEA3 enriched TFs')+
+  scale_y_continuous(breaks = seq(-0.25,1, 0.25),
+                     limits = c(-0.25, 1.1))+
+  RotatedAxis()+
+  ggplot2::guides(fill=guide_legend(title = ''))
+
+f3f
+
+ggsave(filename = paste0(fig_dir, 'figure_3f', figure_suffix),
+       plot = f3f,
+       width = 4,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# What biological themes are the 13 DE TFs associated with?
+library(enrichR)
+dbs <- listEnrichrDbs()
+
+top_tfs <- chea_degs %>%
+  filter(avg_log2FC > 0.25) %>%
+  dplyr::select(gene) %>%
+  pull() %>%
+  unique()
+
+top_tf_er <- enrichR::enrichr(gene = top_tfs,
+                              databases = 'GO_Cellular_Component_2017b')
+
+```
+
+# Supplemental Figure 3
+
+## SF3A: Interferon gene expression
+
+```{r}
+# Pull interferon genes
+ifn_genes <- grep(row.names(so_pac), pattern = '^IFN', value = TRUE) %>%
+  sort()
+
+# Separate ligands and receptors, construct row annotation
+
+ifn_recs <- grep(ifn_genes, pattern = '*R1|*R2', value = TRUE)
+
+ifn_genes <- c(ifn_genes[!ifn_genes %in% ifn_recs], ifn_recs)
+
+row_anno <- data.frame(gene_type = ifelse(ifn_genes %in% ifn_recs,
+                                          'receptor',
+                                          'ligand'),
+                       row.names = ifn_genes)
+
+# Order cells by treatment
+cell_order <- so_pac@meta.data %>%
+  mutate(barcode = row.names(.)) %>%
+  dplyr::select(treatment, barcode) %>%
+  arrange(treatment) %>%
+  data.frame(., row.names = 'barcode')
+
+so_pac_ifn_scaled <- GetAssayData(so_pac, layer = 'scale.data')[ifn_genes,row.names(cell_order)]
+
+# Set up color scales
+heatmap_cols <- colorRampPalette(colors = c('purple', 'black', 'yellow'))(100)
+
+ann_colors = list(treatment = c(DMSO_24 = ptx_cols$colors[1],
+                                DMSO_72 = ptx_cols$colors[2],
+                                PTX_24 = ptx_cols$colors[3],
+                                PTX_72 = ptx_cols$colors[4]),
+                  gene_type = c(ligand = 'gray75',
+                                receptor = 'gray10'))
+
+# Plot
+pheatmap::pheatmap(so_pac_ifn_scaled,
+                   show_colnames = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_col = cell_order,
+                   annotation_row = row_anno,
+                   annotation_colors = ann_colors,
+                   cluster_rows = FALSE,
+                   color = heatmap_cols,
+                   breaks = seq(from = -3, to = 3, length.out = 100),
+                   main = 'S3A: Interferon gene expression')
+
+
+so_pac_ifn_scaled <- so_pac@assays$RNA@data[ifn_genes,row.names(cell_order)] %>%
+  as.data.frame()
+
+# Set up color scales
+heatmap_cols <- colorRampPalette(colors = c('black', 'yellow'))(100)
+
+ann_colors = list(treatment = c(DMSO_24 = ptx_cols$colors[1],
+                                DMSO_72 = ptx_cols$colors[2],
+                                PTX_24 = ptx_cols$colors[3],
+                                PTX_72 = ptx_cols$colors[4]),
+                  gene_type = c(ligand = 'gray75',
+                                receptor = 'gray10'))
+
+# Plot
+pheatmap::pheatmap(so_pac_ifn_scaled,
+                   show_colnames = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_col = cell_order,
+                   annotation_row = row_anno,
+                   annotation_colors = ann_colors,
+                   cluster_rows = FALSE,
+                   color = heatmap_cols,
+                   main = 'S3A: Interferon gene expression',
+                   gaps_col = cell_order$treatment %>% table() %>% cumsum(),
+                   fontsize = 8,
+                   border_color = NA,
+                   width = 3.75,
+                   height = 4,
+                   filename = paste0(fig_dir, '/sf_3a', figure_suffix))
+
+
+```
+
+## SF3b: IFN scRNA-seq QC
+
+```{r}
+lig_qc_tib <- so_ligand@meta.data %>%
+  dplyr::select(condition, nCount_RNA, nFeature_RNA, percent.mt) %>%
+  gather(-condition, key = 'metric', value = 'quantity')
+
+sf3b <- ggplot(lig_qc_tib, aes(x = condition, y = quantity, fill = condition))+
+  geom_violin(linewidth = 0.25, draw_quantiles = c(0.25, 0.5, 0.75))+
+  mytheme()+
+  facet_grid(metric~., scales = 'free')+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = 'none')+
+  RotatedAxis()+
+  ylab('')+
+  xlab('Condition')+
+  ggtitle('S3B: QC metrics')+
+  scico::scale_fill_scico_d(palette = 'roma')
+
+ggsave(filename = paste0(fig_dir, 'sf_3b', figure_suffix),
+       plot = sf3b,
+       width = 3.75,
+       height = 4,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+# sf3d_1 <- ggplot(so_ligand@meta.data,
+#                  aes(x = condition, y = nCount_RNA, fill = condition))+
+#   geom_violin(linewidth = 0.25, draw_quantiles = c(0.25, 0.5, 0.75))+
+#   mytheme()+
+#   theme(panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = 'none')+
+#   RotatedAxis()+
+#   ylab('Number of UMI')
+# 
+# sf3d_2 <- ggplot(so_ligand@meta.data,
+#                  aes(x = condition, y = nFeature_RNA, fill = condition))+
+#   geom_violin(linewidth = 0.25, draw_quantiles = c(0.25, 0.5, 0.75))+
+#   mytheme()+
+#   theme(panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = 'none')+
+#   RotatedAxis()+
+#   ylab('Number of unique features')
+# 
+# sf3d_3 <- ggplot(so_ligand@meta.data,
+#                  aes(x = condition, y = percent.mt, fill = condition))+
+#   geom_violin(linewidth = 0.25, draw_quantiles = c(0.25, 0.5, 0.75))+
+#   mytheme()+
+#   theme(panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = 'none')+
+#   RotatedAxis()+
+#   ylab('Percent mitochondrial UMI')
+# 
+# 
+# sf3d <- gridExtra::grid.arrange(sf3d_1, sf3d_2, sf3d_3,
+#                      ncol = 3,
+#                      top = text_grob(label = 'SF3D: scRNA-seq QC metrics',
+#                                      size = title_size))
+# 
+# sf3d
+# 
+# ggsave(filename = paste0(fig_dir, 'sf_3d', figure_suffix),
+#        plot = sf3d,
+#        width = 7,
+#        height = 2.5,
+#        device=figure_device,
+#        dpi=dpi_figures)
+```
+
+## SF3C: IFN UMAP
+
+```{r}
+# 
+so_lig_meta <- so_ligand@meta.data %>%
+  mutate(umap_1 = so_ligand@reductions$umap@cell.embeddings[,1],
+         umap_2 = so_ligand@reductions$umap@cell.embeddings[,2])
+
+
+sf3c <- ggplot(so_lig_meta, aes(x = umap_1, y = umap_2, color = factor(Phase, levels = c('G1', 'S', 'G2M'))))+
+  geom_point(size = 1, shape = 16, stroke = 0.25)+
+  coord_equal()+
+  mytheme()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'right')+
+  ggtitle('S3C: UMAP by Cell Cycle Phase')+
+  guides(fill = guide_legend(override.aes = list(size = 2.5)))+
+  scale_color_manual(values = cc_dict$color)+
+  labs(color = 'Phase')
+
+sf3c
+
+ggsave(filename = paste0(fig_dir, 'sf_3c', figure_suffix),
+       plot = sf3c,
+       width = 3.75,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# Compute ARI between cluster and cell cycle
+aricode::NMI(so_ligand@meta.data$seurat_clusters,
+             so_ligand@meta.data$Phase)
+```
+
+## SF3C: Barplot of cell cycle
+
+```{r}
+sf3d <- ggplot(so_ligand@meta.data, aes(x = condition, fill = factor(Phase, levels = c('G1', 'S', 'G2M'))))+
+  geom_bar(position = 'fill', color = 'black')+
+  ylab('Fraction')+
+  xlab('Condition')+
+  ggtitle('S3D: Cell cycle assignment')+
+  mytheme()+
+  theme(legend.key.size = unit(0.25, 'cm'))+
+  RotatedAxis()+
+  scale_fill_manual(values = cc_dict$color)+
+  labs(fill = 'Phase')
+
+sf3d
+
+ggsave(filename = paste0(fig_dir, 'sf_3d', figure_suffix),
+       plot = sf3d,
+       width = 3.5,
+       height = 2,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+
+## SF3E: Fraction of multinucleated cells in IFN treated
+
+```{r}
+ifn_img <- read_csv('deps/240901_edu/level_3.csv') %>%
+  filter(nuc_s.area_sum > 100 & cyto_s.area > 100 & cyto_s.area < 10000) %>% # Size filters to remove any segmentations that are unlikely to represent valid cells
+  filter(! perturb %in% c('DMSO', 'PTX')) %>% 
+  mutate(perturb_string = paste0(perturb, '_', concentration, ifelse(perturb == 'PBS', '%', 'ng/mL'))) 
+
+ifn_img_sum <- ifn_img %>%
+  group_by(cell_line, column, perturb_string, perturb) %>%
+  summarize(n_mono = sum(!multinucleated),
+            n_multi = sum(multinucleated),
+            frac_multi = n_multi/n_mono)
+
+sf3e <- ggplot(ifn_img_sum, aes(x = perturb, y = frac_multi))+
+  geom_col(data = ifn_img_sum %>%
+             group_by(cell_line, perturb) %>%
+             summarize(frac_multi = mean(frac_multi)),
+           aes(x = perturb, y = frac_multi, fill = perturb))+
+  geom_point()+
+  facet_wrap(~cell_line)+
+  stat_compare_means(method = 'wilcox',
+                     comparisons = list(c('IFNB', 'PBS'),
+                                        c('IFNG', 'PBS')), size = 3,
+                     label = 'p.signif',
+                     step.increase = 0.2)+
+  mytheme()+
+  ylab('Fraction Multinucleated')+
+  xlab('')+
+  ggtitle('S3E: Interferon does not alter multinucleation')+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  ylim(0,0.21)
+
+sf3e
+
+ggsave(filename = paste0(fig_dir, 'sf_3e', figure_suffix),
+       plot = sf3e,
+       width = 4,
+       height = 2.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+# EDU positive
+
+# Add EDU status
+ifn_img_hcc1143 <- ifn_img %>%
+  filter(cell_line == 'HCC1143') %>%
+  mutate(status = ifelse(nuc_cy5_total_intensity > edu_thresh,
+                         'EdU+',
+                         ifelse(nuc_dapi_total_intensity < dapi_thresh[1],
+                                '2N/EdU-',
+                                '4N/EdU-')))
+
+ifn_img_hcc1806 <- ifn_img %>%
+  filter(cell_line == 'HCC1806') %>%
+  mutate(status = ifelse(nuc_cy5_total_intensity > edu_thresh,
+                         'EdU+',
+                         ifelse(nuc_dapi_total_intensity < dapi_thresh[2],
+                                '2N/EdU-',
+                                '4N/EdU-')))
+
+ifn_img_mdamb468 <- ifn_img %>%
+  filter(cell_line == 'MDAMB468') %>%
+  mutate(status = ifelse(nuc_cy5_total_intensity > edu_thresh,
+                         'EdU+',
+                         ifelse(nuc_dapi_total_intensity < dapi_thresh[3],
+                                '2N/EdU-',
+                                '4N/EdU-')))
+
+ifn_img_status <- rbind(ifn_img_hcc1143, ifn_img_hcc1806, ifn_img_mdamb468)
+
+# Cell count plot
+
+ifn_img_cellcount <- ifn_img_status %>%
+  dplyr::select(column, perturb, cell_line, status) %>%
+  table() %>%
+  as_tibble() %>%
+  group_by(column, perturb, cell_line) %>%
+  mutate(frac = n/sum(n)) %>%
+  filter(n != 0)
+
+ggplot(ifn_img_cellcount, aes(x = perturb, y = frac, fill = status))+
+  geom_col(aes(group = column), position = 'dodge')+
+  facet_wrap(~cell_line)
+
+ifn_img %>%
+  dplyr::select(row, column, cell_line, perturb) %>%
+  table() %>%
+  as_tibble() %>%
+  filter(n != 0)
+
+ifn_status_tab <- ifn_img_status %>%
+  dplyr::select(perturb, status, cell_line) %>%
+  table() %>%
+  as_tibble() %>%
+  group_by(cell_line, perturb) %>%
+  mutate(frac = n/sum(n))
+
+ggplot(ifn_status_tab, aes(x = perturb, y = frac, fill = status))+
+  geom_col()+
+  facet_wrap(~cell_line)
+```
+
+## S3G: Correlation of TFs
+
+```{r}
+tf_exp <- GetAssayData(subset(so_pac, subset = treatment %in% c('PTX_24', 'PTX_72')), layer = 'scale.data')[top_tfs,]
+
+tf_cor <- cor(t(tf_exp))
+
+pheatmap::pheatmap(tf_cor,
+                   main = 'S3F: Single-cell expression correlation \n(paclitaxel treated)',
+                   treeheight_row = 5,
+                   treeheight_col = 5,
+                   file = paste0(fig_dir, 'sf_3f', figure_suffix),
+                   height = 3,
+                   width = 3,
+                   breaks = seq(-1,1,length.out = 101),
+                   fontsize = 5)
+
+# Dotplot of top TFs in in IFN treated
+
+so_ifn <- subset(so_ligand, subset = condition %in% c('PBS', 'IFNB', 'IFNG'))
+
+sf4a <- DotPlot(so_ifn, features = top_tfs, group.by = 'condition', cols = 'RdYlBu')+
+  mytheme()+
+  RotatedAxis()+
+  ylab('Condition')+
+  ggtitle('S4A: scRNA-seq Expression of assayed TFs')
+
+ggsave(filename = paste0(fig_dir, 'sf_4a', figure_suffix),
+       plot = sf4a,
+       width = 6,
+       height = 2.75,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+
+# Figure 4
+
+## Read data and prepare
+
+```{r}
+f4a_l3 <- read_csv('deps/230125_level_3.csv')
+
+l4 <- f4a_l3 %>%
+  filter(n_nuclei >= 1 & cyto_s.area > 100) %>%
+  group_by(plate, row, column, sirna, drug_a, cell_line, growth_control_type) %>%
+  summarize(n_cell = n(),
+            n_nuclei = sum(n_nuclei),
+            total_cyto = sum(cyto_s.area),
+            total_nuc = sum(nuc_s.area_sum),
+            frac_multinuc = sum(multinucleated)/n())
+
+ggplot(l4, aes(x = sirna, y = frac_multinuc, fill = drug_a))+
+  geom_boxplot()+
+  facet_grid(cell_line~growth_control_type, scales = 'free_x', space = 'free_x')+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+ctrl_count <- l4 %>%
+  filter(sirna == 'NonTarget' & drug_a == 'DMSO') %>%
+  group_by(plate) %>%
+  summarize(ctrl_n_cell = mean(n_cell),
+            ctrl_multinuc = mean(frac_multinuc))
+
+l4_norm <- full_join(x = l4,
+                     y = ctrl_count,
+                     by = c('plate'),
+                     suffix = c('', '')) %>%
+  mutate(rel_cell = n_cell/ctrl_n_cell,
+         rel_multinuc = frac_multinuc/ctrl_multinuc) %>%
+  mutate(frac_inhib = 1 - rel_cell)
+
+ggplot(l4_norm, aes(x = sirna, y = rel_cell, fill = drug_a))+
+  geom_boxplot()+
+  facet_grid(cell_line~growth_control_type, scales = 'free_x', space = 'free_x')+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  geom_hline(yintercept = 1, linetype = 'dashed')
+
+ggplot(l4_norm, aes(x = sirna, y = frac_inhib, fill = drug_a))+
+  geom_boxplot()+
+  facet_grid(cell_line~growth_control_type, scales = 'free_x', space = 'free_x')+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  geom_hline(yintercept = 0, linetype = 'dashed')
+
+# Create dictionary of TF identities
+sirna_dict <- tibble(sirna = unique(l4$sirna)) %>%
+  mutate(sirna_type = ifelse(sirna %in% c('PLK1', 'KIF11'),
+                             'Negative Growth Control',
+                             ifelse(sirna %in% c('NonTarget', 'GAPD'),
+                                    'Positive Growth Control',
+                                    'TF panel')))
+```
+
+## Z' calculation
+
+```{r}
+l4_controls <- l4_norm %>%
+  filter(sirna %in% c('NonTarget', 'PLK1')) %>%
+  group_by(cell_line, sirna, drug_a) %>%
+  summarize(mean_frac_inhib = mean(frac_inhib),
+            sd_frac_inhib = sd(frac_inhib))
+
+l4_pos <- l4_controls %>%
+  group_by(cell_line, drug_a) %>%
+  filter(sirna == 'NonTarget') %>%
+  mutate(pos_mean_frac_inhib = mean_frac_inhib,
+         pos_sd_frac_inhib = sd_frac_inhib) %>%
+  dplyr::select(-mean_frac_inhib, -sd_frac_inhib, -sirna, -drug_a)
+
+l4_neg <- l4_controls %>%
+  group_by(cell_line, drug_a) %>%
+  filter(sirna == 'PLK1') %>%
+  mutate(neg_mean_frac_inhib = mean_frac_inhib,
+         neg_sd_frac_inhib = sd_frac_inhib) %>%
+  dplyr::select(-mean_frac_inhib, -sd_frac_inhib, -sirna, -drug_a)
+
+l4_z <- full_join(x = l4_pos,
+                  y = l4_neg,
+                  by = c('drug_a', 'cell_line')) %>%
+  mutate(z_score = 1 - (3*pos_sd_frac_inhib + 3*neg_sd_frac_inhib)/abs(pos_mean_frac_inhib - neg_mean_frac_inhib))
+
+write_csv(l4_z, 'sd5.csv')
+
+
+```
+
+
+## A : siRNA panel cell count heatmap
+
+1080 x 360 px
+
+```{r}
+# Compute stats across triplicates against same-drug, same-plate NonTarget control
+l4a_norm_stats <- l4_norm %>%
+  group_by(drug_a, cell_line) %>%
+  pairwise_t_test(frac_inhib ~ sirna, ref.group = 'NonTarget', p.adjust.method = 'bonferroni')
+
+# Number of significant cell count changes for dmso and ptx
+l4a_norm_stats %>%
+  filter(drug_a == 'DMSO') %>% 
+  filter(p.adj < 0.05) %>%
+  dplyr::select(group2) %>%
+  unique()
+
+l4a_norm_stats %>%
+  filter(drug_a == 'PTX') %>% 
+  filter(p.adj < 0.05) %>%
+  dplyr::select(group2) %>%
+  unique()
+
+# Find average cell count across triplicate wells 
+l4a_norm_sum <- l4_norm %>%
+  ungroup() %>%
+  group_by(drug_a, sirna, cell_line) %>%
+  summarize(mean_frac_inhib = mean(frac_inhib)) %>%
+  mutate(id = paste(cell_line, drug_a, sep = '_'))
+
+# Spread and format into dataframe for heatmap
+l4a_norm_wide <- l4a_norm_sum %>%
+  ungroup() %>%
+  dplyr::select(-drug_a, -cell_line) %>%
+  spread(key = sirna, value = mean_frac_inhib)
+
+l4a_df <- data.frame(l4a_norm_wide[,-1],
+                    row.names = l4a_norm_wide$id)
+
+# Set up annotations
+col_anno <- data.frame(sirna_type = sirna_dict$sirna_type,
+                       row.names = sirna_dict$sirna)
+
+row_anno <- data.frame(cell_line = str_split(row.names(l4a_df), pattern = '_', simplify = TRUE)[,1],
+                       treatment = str_split(row.names(l4a_df), pattern = '_', simplify = TRUE)[,2],
+                       row.names = row.names(l4a_df))
+
+# Set up custom color ramp
+ramplength <- 101
+custombreaks <- seq(-1, 1, length.out = ramplength)
+colorramp <- scico::scico(n = ramplength,
+                          palette = 'bam', direction = -1)
+# Create heatmap
+
+growth_order <- colnames(l4a_df)[order(colSums(l4a_df), decreasing = FALSE)]
+
+ctrl_order <- c('NonTarget', 'GAPD', 'KIF11', 'PLK1')
+
+growth_order2 <- c(ctrl_order, growth_order[! growth_order %in% ctrl_order])
+
+pheatmap::pheatmap(l4a_df[,growth_order],
+                   cluster_rows = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_col = col_anno,
+                   main = 'F: Relative Cell Count at 72 hours \n (vs DMSO + NonTarget siRNA)',
+                   display_numbers = TRUE,
+                   breaks = custombreaks,
+                   color = colorramp,
+                   number_color = 'black',
+                   cellwidth = 30,
+                   cellheight = 20)
+
+row_order <- c('HCC1143_DMSO', 'HCC1806_DMSO', 'MDA-MB-468_DMSO', 'HCC1143_PTX', 'HCC1806_PTX', 'MDA-MB-468_PTX')
+
+pheatmap::pheatmap(l4a_df[row_order,growth_order2],
+                   cluster_rows = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_col = col_anno,
+                   main = 'F: Relative Cell Count at 72 hours \n (vs DMSO + NonTarget siRNA)',
+                   display_numbers = TRUE,
+                   breaks = custombreaks,
+                   color = colorramp,
+                   number_color = 'black',
+                   cellwidth = 30,
+                   cellheight = 20,
+                   gaps_col = 4,
+                   gaps_row = 3)
+
+# With significance instead of fraction
+
+l4a_stats_df <- l4a_norm_stats %>%
+  mutate(cell_drug = paste0(cell_line, '_', drug_a)) %>%
+  mutate(p.adj.signif_string = ifelse(p.adj.signif == 'ns',
+                               '',
+                               p.adj.signif)) %>%
+  dplyr::select(cell_drug, group2, p.adj.signif_string) %>%
+  spread(-cell_drug, key = group2) %>%
+  data.frame(., row.names = 'cell_drug')
+
+# fill in nontarget
+l4a_stats_df <- cbind(l4a_stats_df, tibble(NonTarget = rep('-', 6)))
+
+cell_line_cols <- scico::scico(n = 3, palette = 'lipari')
+names(cell_line_cols) <- c('HCC1143', 'HCC1806', 'MDA-MB-468')
+
+anno_colors <- list(
+  treatment = c(DMSO = ptx_cols$colors[2], PTX = ptx_cols$colors[4]),
+  sirna_type = c(`Negative Growth Control` = 'orange',
+                 `Positive Growth Control` = 'blue',
+                 `TF panel` = 'black'),
+  cell_line = cell_line_cols
+)
+
+
+# pheatmap::pheatmap(l4a_df[row_order,growth_order2],
+#                    cluster_rows = FALSE,
+#                    cluster_cols = FALSE,
+#                    annotation_col = col_anno,
+#                    annotation_row = row_anno,
+#                    annotation_colors = anno_colors,
+#                    show_rownames = FALSE,
+#                    main = '4A: Relative Cell Count at 72 hours \n (vs DMSO + NonTarget siRNA)',
+#                    display_numbers = l4a_stats_df[row_order, growth_order2],
+#                    breaks = custombreaks,
+#                    color = colorramp,
+#                    number_color = 'black',
+#                    cellwidth = 15,
+#                    cellheight = 15,
+#                    gaps_col = 4,
+#                    gaps_row = 3,
+#                    fontsize = 6,
+#                    width = 7.5,
+#                    height = 3,
+#                    filename = paste0(fig_dir, '/figure_4a', figure_suffix))
+
+pheatmap::pheatmap(t(l4a_df[row_order,growth_order2]),
+                   cluster_rows = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_row = col_anno,
+                   annotation_col = row_anno,
+                   annotation_colors = anno_colors,
+                   show_colnames = FALSE,
+                   main = '4A: Percent Cell Count Inhibition',
+                   display_numbers = t(l4a_stats_df[row_order,growth_order2]),
+                   breaks = custombreaks,
+                   color = colorramp,
+                   number_color = 'black',
+                   cellwidth = 15,
+                   cellheight = 15,
+                   gaps_col = 3,
+                   gaps_row = 4,
+                   fontsize = 5,
+                   width = 3.75,
+                   height = 4.75,
+                   filename = paste0(fig_dir, '/figure_4a', figure_suffix))
+
+pheatmap::pheatmap(l4a_df[row_order,growth_order2],
+                   cluster_rows = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_row = row_anno,
+                   annotation_col = col_anno,
+                   annotation_colors = anno_colors,
+                   show_colnames = TRUE,
+                   main = '4A: Percent Cell Count Inhibition',
+                   display_numbers = l4a_stats_df[row_order,growth_order2],
+                   breaks = custombreaks,
+                   color = colorramp,
+                   number_color = 'black',
+                   cellwidth = 15,
+                   cellheight = 15,
+                   gaps_col = 4,
+                   gaps_row = 3,
+                   fontsize = 8,
+                   width = 7.5,
+                   height = 3,
+                   filename = paste0(fig_dir, '/figure_4a2', figure_suffix),
+                   angle_col = 45)
+
+```
+
+## 2/13: Figure 4a redux
+
+```{r}
+
+sig_string <- function(x){ifelse(x > 0.05,
+                                 '',
+                                 ifelse(x > 0.01,
+                                        '*',
+                                        ifelse(x > 0.001,
+                                               '**',
+                                               '***')))}
+
+# Compute meta p for individual significance
+f4a_metap <- l4a_norm_stats %>%
+  group_by(drug_a, group2) %>%
+  summarize(nom.metap = metap::sumlog(p)$p,
+            adj.metap = metap::sumlog(p.adj)$p) %>%
+  mutate(adj.metap.string = sig_string(adj.metap)) %>%
+  mutate(sirna = group2)
+
+# Compute mean relative cell count across all cell lines pooled
+f4_norm_sum <- l4_norm %>%
+  group_by(sirna, drug_a) %>%
+  summarize(mean_rel_cell = mean(rel_cell),
+            sem_rel_cell = sd(rel_cell)/(sqrt(n())),
+            mean_frac_multinuc = mean(frac_multinuc),
+            sem_frac_multinuc = sd(frac_multinuc)/(sqrt(n()))) %>%
+  mutate(tf_type = ifelse(sirna %in% c('NonTarget', 'GAPD', 'PLK1', 'KIF11'),
+                                       'Control',
+                                       'Panel'))
+
+# combine meta p tibble with mean values tibble, remove GAPD and KIF11 
+
+f4a_tib <- full_join(x = f4_norm_sum,
+                     y = f4a_metap,
+                     by = c('drug_a', 'sirna'))
+
+# order results by DMSO cell count
+sirna_order <- f4a_tib %>%
+  filter(drug_a == 'PTX') %>%
+  arrange(desc(mean_rel_cell)) %>%
+  dplyr::select(sirna) %>%
+  pull()
+
+# f4a
+
+f4a <- ggplot(f4a_tib %>% filter(!sirna %in% c('GAPD', 'KIF11')) , aes(x = factor(sirna, levels = sirna_order), y = mean_rel_cell))+
+  geom_hline(yintercept = 1, linewidth = 0.25, alpha = 0.7, color = 'black')+
+  geom_hline(yintercept = f4a_tib %>% filter(drug_a == 'PTX' & sirna == 'NonTarget') %>% dplyr::select(mean_rel_cell) %>% pull(), linewidth = 0.25, alpha = 0.7, color = 'black', linetype = 'dashed')+
+  geom_col(aes(group = drug_a, fill = drug_a), position = 'dodge', color = 'black', width = 0.55)+
+  geom_errorbar(aes(ymin=mean_rel_cell-sem_rel_cell, ymax=mean_rel_cell+sem_rel_cell, group = drug_a), width=.2,
+                 position=position_dodge(.55)) +
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]),
+                    labels = c('DMSO', '1nM PTX'))+
+  scale_y_continuous(breaks = seq(0, 1.25, 0.25))+
+  ylab('Relative cell count \n (Mean across cell line replicates)')+
+  facet_grid(.~tf_type, space = 'free_x', scales = 'free')+
+  ggtitle('S4A: siRNA impact on cell count')+
+  geom_text(aes(label = adj.metap.string, group = drug_a, y = mean_rel_cell+sem_rel_cell+0.025), position = position_dodge(width = 0.65), size = 2)+
+  mytheme()+
+  RotatedAxis()+
+  labs(fill = 'treatment')+
+  theme(legend.position = 'top',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'),)+
+  xlab('siRNA')+
+  guides(fill = guide_legend(title = ''))
+
+f4a
+
+# ggsave(filename = paste0(fig_dir, 'sf_4a', figure_suffix),
+#        plot = f4a,
+#        width = 5,
+#        height = 3,
+#        device=figure_device,
+#        dpi=dpi_figures)
+
+
+```
+
+## Supplemental figure 4B: Heatmap of multinucleation
+
+1080 x 360
+
+```{r}
+l4b_norm_stats <- l4_norm %>%
+  group_by(drug_a, cell_line, plate) %>%
+  pairwise_t_test(frac_multinuc ~ sirna, ref.group = 'NonTarget')
+
+l4b_multi_sum <- l4_norm %>%
+  ungroup() %>%
+  group_by(drug_a, sirna, cell_line) %>%
+  summarize(mean_multinuc = mean(frac_multinuc),
+            n_cells = sum(n_cell)) %>%
+  mutate(id = paste(cell_line, drug_a, sep = '_'))
+
+l4b_multi_wide <- l4b_multi_sum %>%
+  ungroup() %>%
+  dplyr::select(-drug_a, -cell_line, -n_cells) %>%
+  spread(key = sirna, value = mean_multinuc)
+
+l4b_df <- data.frame(l4b_multi_wide[,-1],
+                    row.names = l4b_multi_wide$id)
+
+col_anno <- data.frame(sirna_type = sirna_dict$sirna_type,
+                       row.names = sirna_dict$sirna)
+
+# Set up custom color ramp
+ramplength <- 101
+custombreaks <- seq(0, ceiling(max(l4b_df)/.05)*.05, length.out = ramplength)
+colorramp <- scico::scico(n = ramplength,
+                          palette = 'bilbao',
+                          direction = -1)
+# # Set up 
+# 
+# l4b_row_order <- colnames(l4b_df)[order(colSums(l4b_df), decreasing = TRUE)]
+# 
+# pheatmap::pheatmap(l4b_df[,growth_order],
+#                    cluster_rows = FALSE,
+#                    cluster_cols = FALSE,
+#                    annotation_col = col_anno,
+#                    main = 'G: Fraction Multinucleated at 72 hours',
+#                    display_numbers = round(l4b_df[,growth_order],2),
+#                    breaks = custombreaks,
+#                    color = colorramp,
+#                    number_color = 'black',
+#                    cellwidth = 30,
+#                    cellheight = 20)
+
+# Add control population to multinucleated sum tibble
+ctrl_prop <- l4b_multi_sum %>%
+  filter(sirna == 'NonTarget') %>%
+  mutate(ctrl_n_multinuc = round(n_cells*mean_multinuc),
+         ctrl_n_cells = n_cells) %>%
+  ungroup() %>%
+  dplyr::select(id, ctrl_n_multinuc, ctrl_n_cells)
+
+prestat_prop <- l4b_multi_sum %>% 
+  mutate(n_multinuc = round(mean_multinuc*n_cells)) %>%
+  full_join(x = .,
+            y = ctrl_prop,
+            by = 'id',
+            suffix = c('', ''))
+
+# Compute p value via prop.test compared to same cell_line + siNonTarget
+stat_prop <- prestat_prop %>%
+  ungroup()
+
+for(i in 1:nrow(prestat_prop)){
+  curr <- prestat_prop[i,]
+  
+  curr_prop.test <- prop.test(x = rbind(c(curr$n_multinuc, curr$n_cells),
+                                        c(curr$ctrl_n_multinuc, curr$ctrl_n_cells)))
+  
+  stat_prop$p.value[i] <- curr_prop.test$p.value
+  stat_prop$p.adj[i] <- min(curr_prop.test$p.value * (length(unique(prestat_prop$sirna))-1), 1)
+}
+
+# Filter to only significant p values
+
+sig_multinuc <- stat_prop %>%
+  mutate(p.adj.string = sig_string(p.adj))
+
+# Map back to l4_multi_sum
+
+l4b_multi_sum_stats <- full_join(x = l4b_multi_sum,
+                                 y = sig_multinuc,
+                                 by = c('sirna', 'id', 'cell_line'),
+                                 suffix = c('', '')) %>%
+  ungroup() %>%
+  mutate(display_string = paste0(round(mean_multinuc, 2), ' \n ', p.adj.string))
+
+l4b_multi_sum_stats_wide <- l4b_multi_sum_stats %>%
+  ungroup() %>%
+  dplyr::select(sirna, id, p.adj.string) %>%
+  spread(key = sirna, value = p.adj.string)
+
+l4b_stat_df <- data.frame(l4b_multi_sum_stats_wide[,-1],
+                    row.names = l4b_multi_sum_stats_wide$id)
+
+l4b_stat_df[,'NonTarget'] <- '-'
+
+
+pheatmap::pheatmap(t(l4b_df[row_order,growth_order2]),
+                   cluster_rows = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_row = col_anno,
+                   annotation_col = row_anno,
+                   annotation_colors = anno_colors,
+                   show_colnames = FALSE,
+                   main = '4B: Fraction Multinucleated at 72 hours',
+                   display_numbers = t(l4b_stat_df[row_order,growth_order2]),
+                   breaks = custombreaks,
+                   color = colorramp,
+                   number_color = 'black',
+                   cellwidth = 15,
+                   cellheight = 15,
+                   gaps_col = 3,
+                   gaps_row = 4,
+                   fontsize = 5,
+                   width = 3.75,
+                   height = 4.75,
+                   filename = paste0(fig_dir, '/figure_4b', figure_suffix))
+
+pheatmap::pheatmap(l4b_df[row_order,growth_order2],
+                   cluster_rows = FALSE,
+                   cluster_cols = FALSE,
+                   annotation_row = row_anno,
+                   annotation_col = col_anno,
+                   annotation_colors = anno_colors,
+                   show_colnames = TRUE,
+                   main = '4B: Fraction Multinucleated',
+                   display_numbers = l4b_stat_df[row_order,growth_order2],
+                   breaks = custombreaks,
+                   color = colorramp,
+                   number_color = 'black',
+                   cellwidth = 15,
+                   cellheight = 15,
+                   gaps_col = 4,
+                   gaps_row = 3,
+                   fontsize = 8,
+                   width = 7.5,
+                   height = 3,
+                   filename = paste0(fig_dir, '/figure_4b2', figure_suffix),
+                   angle_col = 45)
+```
+
+## 2/13: Figure 4b redux
+
+```{r}
+
+# Compute meta p for individual significance
+f4c_metap <- sig_multinuc %>%
+  group_by(drug_a, sirna) %>%
+  summarize(nom.metap = metap::sumlog(p.value)$p,
+            adj.metap = metap::sumlog(p.adj)$p) %>%
+  mutate(adj.metap.string = sig_string(adj.metap))
+
+# combine meta p tibble with mean values tibble, remove GAPD and KIF11 
+
+f4c_tib <- full_join(x = f4_norm_sum,
+                     y = f4c_metap,
+                     by = c('drug_a', 'sirna'))
+
+# f4c
+
+f4b <- ggplot(f4c_tib %>% filter(!sirna %in% c('GAPD', 'KIF11')), aes(x = factor(sirna, levels = sirna_order), y = mean_frac_multinuc))+
+  geom_hline(yintercept = f4c_tib %>% filter(drug_a == 'DMSO' & sirna == 'NonTarget') %>% dplyr::select(mean_frac_multinuc) %>% pull(), linewidth = 0.25, alpha = 0.7, color = 'black')+
+  geom_hline(yintercept = f4c_tib %>% filter(drug_a == 'PTX' & sirna == 'NonTarget') %>% dplyr::select(mean_frac_multinuc) %>% pull(), linewidth = 0.25, alpha = 0.7, color = 'black', linetype = 'dashed')+
+  geom_col(aes(group = drug_a, fill = drug_a), position = 'dodge', color = 'black', width = 0.55)+
+  geom_errorbar(aes(ymin=mean_frac_multinuc-sem_frac_multinuc, ymax=mean_frac_multinuc+sem_frac_multinuc, group = drug_a), width=.2,
+                 position=position_dodge(.55)) +
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]),
+                    labels = c('DMSO', '1nM PTX'))+
+  scale_y_continuous(breaks = seq(0, 0.3, 0.05))+
+  ylab('Fraction multinucleated \n (Mean across cell line replicates)')+
+  facet_grid(.~tf_type, space = 'free_x', scales = 'free')+
+  ggtitle('4B: siRNA impact on Multinucleation')+
+  geom_text(aes(label = adj.metap.string, group = drug_a, y = mean_frac_multinuc+sem_frac_multinuc+0.0125), position = position_dodge(width = 0.65), size = 2)+
+  mytheme()+
+  RotatedAxis()+
+  labs(fill = 'treatment')+
+  theme(legend.position = 'top',
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'))+
+  xlab('siRNA')+
+  guides(fill = guide_legend(title = ''))
+
+f4b
+
+# ggsave(filename = paste0(fig_dir, 'sf_4b', figure_suffix),
+#        plot = f4b,
+#        width = 5,
+#        height = 3,
+#        device=figure_device,
+#        dpi=dpi_figures)
+
+
+```
+
+
+### Alt: PCA of relative cell count / multinucleation rates
+
+```{r, fig.asp = 1}
+l4_prepc <- l4_norm %>% 
+  mutate(condition = paste0(cell_line, '_', drug_a)) %>%
+  group_by(sirna, condition) %>%
+  summarize(mean_rel_count = mean(rel_cell),
+            mean_frac_multinuc = mean(frac_multinuc)) %>%
+  gather(-sirna, -condition, key = 'metric', value = 'value') %>%
+  ungroup() %>%
+  mutate(metric = paste0(condition, '_', metric)) %>%
+  dplyr::select(-condition) %>%
+  spread(key = 'metric', value = 'value')
+
+l4_prepc_df <- data.frame(l4_prepc[,-1],
+                          row.names = l4_prepc$sirna)
+
+pheatmap::pheatmap(l4_prepc_df,
+                   scale = 'column')
+
+l4_pc <- prcomp(l4_prepc_df,
+                scale = TRUE)
+
+pc_sum <- summary(l4_pc)
+
+pc_sum
+
+plot(pc_sum$importance[3,],
+     main = 'Proportion of variance per pc',
+     xlab = 'PC',
+     ylab = 'Proportion of variance',
+     ylim = c(0,1))
+
+l4_pc_tib <- tibble(sirna = row.names(l4_pc$x),
+                    PC_1 = l4_pc$x[,1],
+                    PC_2 = l4_pc$x[,2]) %>%
+  mutate(sirna_growth_type = ifelse(sirna %in% c('KIF11', 'PLK1'),
+                                    'Control - negative growth',
+                                    ifelse(sirna %in% c('GAPD', 'NonTarget'),
+                                           'Control - positive growth',
+                                           'Panel')))
+
+f4c <- ggplot(l4_pc_tib, aes(x = PC_1, y = PC_2, label = sirna, color = sirna_growth_type))+
+  geom_point()+
+  ggrepel::geom_text_repel(show.legend = FALSE, size = 2.5)+
+  coord_equal()+
+  xlab(paste0('PC1 (', round(pc_sum$importance[2,1],2)*100 ,'% variance)'))+
+  ylab(paste0('PC2 (', round(pc_sum$importance[2,2],2)*100 ,'% variance)'))+
+  mytheme()+
+  ggtitle('4C: PCA of siRNA phenotypes')+
+  theme(legend.position = 'top',
+        legend.key.size = unit(0.25, 'cm'),
+        legend.text = element_text(size = 7))+
+  guides(color = guide_legend(title = '', ncol = 3))+
+  scale_color_manual(values = c('orange', 'blue', 'black'))
+
+f4c
+
+ggsave(filename = paste0(fig_dir, 'figure_4c', figure_suffix),
+       plot = f4c,
+       width = 3.75,
+       height = 3.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+```
+
+## SF4C: Heatmap of scaled features
+
+```{r}
+row_anno <- tibble(rows = colnames(l4_prepc_df)) %>%
+  mutate(cell_line = str_split(rows, pattern = '_', simplify = TRUE)[,1],
+         treatment = str_split(rows, pattern = '_', simplify = TRUE)[,2],
+         feature = str_split(rows, pattern = '_', simplify = TRUE)[,5],
+         feature = ifelse(feature == 'count',
+                                 'relative_cell_count',
+                                 'fraction_multinucleated')) %>%
+  data.frame(., row.names = 'rows')
+
+col_anno <- tibble(cols = rownames(l4_prepc_df)) %>%
+  mutate(sirna_type = ifelse(cols %in% c('NonTarget', 'GAPD'),
+                             'Positive Growth Control',
+                             ifelse(cols %in% c('PLK1', 'KIF11'),
+                                    'Negative Growth Control',
+                                    'Panel'))) %>%
+  data.frame(., row.names = 'cols')
+
+cell_line_cols <- scico::scico(n = 3, palette = 'lipari')
+names(cell_line_cols) <- c('HCC1143', 'HCC1806', 'MDA.MB.468')
+
+anno_colors <- list(
+  treatment = c(DMSO = ptx_cols$colors[2], PTX = ptx_cols$colors[4]),
+  sirna_type = c(`Negative Growth Control` = 'orange',
+                 `Positive Growth Control` = 'blue',
+                 `Panel` = 'black'),
+  cell_line = cell_line_cols,
+  feature = c(relative_cell_count = 'gray60',
+              fraction_multinucleated = 'white')
+)
+
+pheatmap::pheatmap(t(l4_prepc_df),
+                   scale = 'row',
+                   main = 'S4C: Scaled phenotype features',
+                   annotation_row = row_anno,
+                   annotation_col = col_anno,
+                   treeheight_row = 15,
+                   treeheight_col = 15,
+                   cellwidth = 10,
+                   cellheight = 10,
+                   height = 3.5,
+                   width = 7,
+                   file = paste0(fig_dir, '/sf_4c', figure_suffix),
+                   annotation_colors = anno_colors,
+                   fontsize = 8)
+
+```
+
+## F4D: Scaled feature distance
+
+```{r}
+scaled_dists <- l4_prepc_df %>%
+  scale() %>%
+  dist()
+
+scaled_dist_mat <- as.matrix(scaled_dists)
+
+nt_dists <- tibble(sirna = colnames(scaled_dist_mat),
+                   nt_dist = scaled_dist_mat['NonTarget',]) %>%
+  arrange(nt_dist) %>%
+  mutate(sirna = factor(sirna, levels = sirna)) %>%
+  mutate(sirna_growth_type = ifelse(sirna %in% c('KIF11', 'PLK1'),
+                                    'Control - negative growth',
+                                    ifelse(sirna %in% c('GAPD', 'NonTarget'),
+                                           'Control - positive growth',
+                                           'Panel')))
+
+f4d <- ggplot(nt_dists %>% filter(sirna != 'NonTarget'), aes(x = sirna, y = nt_dist, fill = sirna_growth_type))+
+  geom_col()+
+  mytheme()+
+  ylab('siRNA total impact\n(Distance from siNonTarget)')+
+  xlab('siRNA')+
+  ggtitle('4D: siRNA total impact')+
+  theme(legend.position = 'top',
+        legend.key.size = unit(0.25, 'cm'),
+        legend.text = element_text(size = 7),
+        axis.text.x = element_text(hjust = 1, angle = 60))+
+  guides(fill = guide_legend(title = '', ncol = 3))+
+  scale_fill_manual(values = c('orange', 'blue', 'black'))
+
+f4d
+
+ggsave(filename = paste0(fig_dir, 'figure_4d', figure_suffix),
+       plot = f4d,
+       width = 3.75,
+       height = 3.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# Separate dmso vs ptx dists
+dmso_dists <- l4_prepc_df[,grep(colnames(l4_prepc_df), pattern = 'DMSO', value = TRUE)] %>%
+  scale() %>%
+  dist() %>%
+  as.matrix()
+
+ptx_dists <- l4_prepc_df[,grep(colnames(l4_prepc_df), pattern = 'PTX', value = TRUE)] %>%
+  scale() %>%
+  dist() %>%
+  as.matrix()
+
+both_dists <- tibble(sirna = colnames(scaled_dist_mat),
+       dmso_dist = dmso_dists['NonTarget',],
+       ptx_dist = ptx_dists['NonTarget',]) %>%
+  mutate(sirna_growth_type = ifelse(sirna %in% c('KIF11', 'PLK1'),
+                                    'Control - negative growth',
+                                    ifelse(sirna %in% c('GAPD', 'NonTarget'),
+                                           'Control - positive growth',
+                                           'Panel')))
+
+ggplot(both_dists, aes(x = dmso_dist, y = ptx_dist, label = sirna, color = sirna_growth_type))+
+  geom_point()+
+  theme_bw()+
+  ggrepel::geom_text_repel()
+
+# separate cell count vs multinucleated 
+
+count_dists <- l4_prepc_df[,grep(colnames(l4_prepc_df), pattern = 'count', value = TRUE)] %>%
+  scale() %>%
+  dist() %>%
+  as.matrix()
+
+multinuc_dists <- l4_prepc_df[,grep(colnames(l4_prepc_df), pattern = 'multinuc', value = TRUE)] %>%
+  scale() %>%
+  dist() %>%
+  as.matrix()
+
+both_dists <- tibble(sirna = colnames(scaled_dist_mat),
+       count_dist = count_dists['NonTarget',],
+       multinuc_dist = multinuc_dists['NonTarget',]) %>%
+  mutate(sirna_growth_type = ifelse(sirna %in% c('KIF11', 'PLK1'),
+                                    'Control - negative growth',
+                                    ifelse(sirna %in% c('GAPD', 'NonTarget'),
+                                           'Control - positive growth',
+                                           'Panel')))
+
+ggplot(both_dists, aes(x = count_dist, y = multinuc_dist, label = sirna, color = sirna_growth_type))+
+  geom_point()+
+  theme_bw()+
+  ggrepel::geom_text_repel()
+
+```
+
+# Supplemental Figures 4C: Proteinsimple quantification
+
+```{r, eval = FALSE}
+# Load total protein normalization data
+west_norm <- read_csv('deps/westerns/simple_western_normalization.csv') %>%
+  mutate(cap = western_capillary)
+
+# Load ELF3 results and plot
+elf3_peaks <- read_delim('deps/westerns/aESE1/2024-11-20_11-26-10_Wes Total Protein_nlc_Export_HDR4/Peaks.txt') %>%
+  janitor::clean_names() %>%
+  mutate(sirna_drug = str_split(sample_1, pattern = ' ', simplify = TRUE)[,2]) %>%
+  mutate(sirna = str_split(sirna_drug, pattern = '-', simplify = TRUE)[,1]) %>%
+  mutate(drug = str_split(sirna_drug, pattern = '-', simplify = TRUE)[,2])
+
+
+elf3_norm <- elf3_peaks %>%
+  filter(cap %in% c(6,7,8,9)) %>%
+  filter(mw_k_da > 56*0.85 & mw_k_da < 56*1.15) %>%
+  group_by(cap) %>%
+  summarize(area_sum = sum(area)) %>%
+  left_join(.,
+            west_norm %>% filter(run == 241120),
+            by = 'cap') %>%
+  mutate(area_norm = area_sum/normalization_factor) %>%
+  mutate(sample = factor(paste0(siRNA, ' + ', drug), levels = c('siNonTarget + DMSO',
+                                                'siNonTarget + PTX',
+                                                'siELF3 + DMSO',
+                                                'siELF3 + PTX')))
+
+
+
+
+ps_elf3 <- ggplot(elf3_norm, aes(x = sample,
+                                  y = area_norm,
+                                  fill = drug))+
+  geom_col()+
+  mytheme()+
+  ylab('Normalized peak area\n(56 kDa +/- 15%)')+
+  xlab('ESE1 (ELF3)')+
+  guides(fill = 'none')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'top')+
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]),
+                    labels = c('DMSO', '1nM PTX'))
+
+# Load FOSL1 results and plot
+fosl1_peaks <- read_delim('deps/westerns/aFRA1/2024-09-07_12-37-09_Wes Total Protein_nlc_Export_HDR4/Peaks.txt') %>%
+  janitor::clean_names() %>%
+  mutate(sirna_drug = str_split(sample_1, pattern = ' ', simplify = TRUE)[,3]) %>%
+  mutate(sirna = str_split(sirna_drug, pattern = '-', simplify = TRUE)[,1]) %>%
+  mutate(drug = str_split(sirna_drug, pattern = '-', simplify = TRUE)[,2])
+
+
+fosl1_norm <- fosl1_peaks %>%
+  filter(cap %in% c(3,5,7,9)) %>%
+  filter(mw_k_da > 45*0.85 & mw_k_da < 45*1.15) %>%
+  group_by(cap) %>%
+  summarize(area_sum = sum(area)) %>%
+  left_join(.,
+            west_norm %>% filter(run == 240907),
+            by = 'cap') %>%
+  mutate(area_norm = area_sum/normalization_factor) %>%
+  mutate(sample = factor(paste0(siRNA, ' + ', drug), levels = c('siNonTarget + DMSO',
+                                                'siNonTarget + PTX',
+                                                'siFOSL1 + DMSO',
+                                                'siFOSL1 + PTX')))
+
+
+
+
+ps_fosl1 <- ggplot(fosl1_norm, aes(x = sample,
+                                  y = area_norm,
+                                  fill = drug))+
+  geom_col()+
+  mytheme()+
+  ylab('Normalized peak area\n(45 kDa +/- 15%)')+
+  xlab('FRA1 (FOSL1)')+
+  guides(fill = 'none')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'top')+
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]),
+                    labels = c('DMSO', '1nM PTX'))
+
+# Load NFE2L2 results and plot
+nfe2l2_peaks <- read_delim('deps/westerns/aNRF2/2024-09-08_11-49-30_Wes Total Protein_nlc_Export_HDR4/Peaks.txt') %>%
+  janitor::clean_names() %>%
+  mutate(sirna_drug = str_split(sample_1, pattern = ' ', simplify = TRUE)[,3]) %>%
+  mutate(sirna = str_split(sirna_drug, pattern = '-', simplify = TRUE)[,1]) %>%
+  mutate(drug = str_split(sirna_drug, pattern = '-', simplify = TRUE)[,2])
+
+
+nfe2l2_norm <- nfe2l2_peaks %>%
+  filter(cap %in% c(3,5,7,9)) %>%
+  filter(mw_k_da > 111*0.85 & mw_k_da < 111*1.15) %>%
+  group_by(cap) %>%
+  summarize(area_sum = sum(area)) %>%
+  left_join(.,
+            west_norm %>% filter(run == 240908),
+            by = 'cap') %>%
+  mutate(area_norm = area_sum/normalization_factor) %>%
+  mutate(sample = factor(paste0(siRNA, ' + ', drug), levels = c('siNonTarget + DMSO',
+                                                'siNonTarget + PTX',
+                                                'siNFE2L2 + DMSO',
+                                                'siNFE2L2 + PTX')))
+
+
+
+
+ps_nfe2l2 <- ggplot(nfe2l2_norm, aes(x = sample,
+                                  y = area_norm,
+                                  fill = drug))+
+  geom_col()+
+  mytheme()+
+  ylab('Normalized peak area\n(112 kDa +/- 15%)')+
+  xlab('NRF2 (NFE2L2)')+
+  guides(fill = 'none')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'top')+
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]),
+                    labels = c('DMSO', '1nM PTX'))
+
+# Combine plots
+sf4c <- gridExtra::grid.arrange(ps_elf3, ps_fosl1, ps_nfe2l2,
+                        ncol = 3,
+                        top = text_grob(label = 'S4C: ProteinSimple siRNA validation',
+                                        size = title_size))
+
+sf4c
+
+ggsave(filename = paste0(fig_dir, 'sf_4c', figure_suffix),
+       plot = sf4c,
+       width = 7,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+```
+
+
+# Figure 5
+
+## 5A: Example images of proliferating HCC1143
+
+```{r, eval = FALSE}
+# Set RGB directory and which well / boundaries to plot
+img_dir <- 'F:/calistri_incucyte/230419_nlc_sirna_1nMPTX_15min/single_tifs/'
+
+curr_well <- 'G4'
+curr_field <- 3
+xbounds <- 350:550
+ybounds <- 600:800
+curr_date <- 230420
+times <- c(2030, 2130, 2200, 2215)
+display_times <- c(0, 60, 90, 105)
+
+# Read level 3 data
+l3 <- data.table::fread('deps/230419_level_3.csv') %>%
+  as_tibble()
+
+# assign cell cycle to l3 data
+l3_phase <- l3 %>%
+    mutate(phase = ifelse(perinuc_nuc_mi_ratio < 0.8 & nuc_cyto_ti_ratio > 0.8,
+                          'M',
+                          ifelse(perinuc_nuc_mi_ratio > 0.8 & nuc_cyto_ti_ratio < 0.5,
+                                 'S/G2',
+                                 'G1')))
+
+# Extract data from spatial bounds
+well_dat <- l3_phase %>%
+  filter(well == curr_well & field == curr_field & date == curr_date) %>%
+  mutate(cyto_m.cy_cor = 1040 - cyto_m.cy)
+
+# Visualize (new)
+
+tiff(filename = paste0(fig_dir, 'figure_5a', figure_suffix), 
+     res = dpi_figures,
+     height = 2.5,
+     width = 2.5,
+     units = 'in')
+
+par(mfrow = c(2,2), mar = c(5,5,5,5))
+for(i in 1:length(times)){
+  
+  curr_dat <- well_dat %>% filter(time == times[i])
+  
+  curr_file <- paste(curr_date, times[i], curr_well, curr_field, sep = '_')
+  curr_red <- readImage(paste0(img_dir, 'red/', curr_file, '_red.tif'))
+  curr_green <- readImage(paste0(img_dir, 'green/', curr_file, '_green.tif'))
+  
+  curr_norm <- rgbImage(red = EBImage::normalize(curr_red),
+                     green = EBImage::normalize(curr_green)) 
+  
+  display(curr_norm[xbounds, ybounds,], method = 'raster')
+  text(x = 40, y = diff(range(ybounds)) - 10, label = paste0(display_times[i], ' minutes'), cex = 2, col = 'white')
+  text(x = curr_dat$cyto_m.cx - min(xbounds)+15, y = curr_dat$cyto_m.cy - min(ybounds), label = curr_dat$phase, adj = c(0,0.5), col = "cyan", cex = 2)
+  
+}
+
+dev.off()
+
+# Plot
+
+ggplot(well_dat, aes(x = nuc_cyto_ti_ratio, y = perinuc_nuc_mi_ratio, color = phase))+
+  geom_point()
+
+```
+
+
+## 4B: Fraction of cells in each phenotype over time
+
+1440 x 720 px
+
+```{r}
+l4 <- read_csv('deps/230419_level_4.csv')
+
+l4_2 <- l4 %>%
+  ungroup() %>%
+  mutate(elapsed = elapsed - 24) %>%
+  filter(elapsed >= 0 & elapsed <= 72) %>%
+  complete(sirna, drug, phase, multinucleated, fill = list(n_cell_sub = 0,
+                                                           prop_cells = 0)) %>%
+  mutate(phase_multi = ifelse(phase == 'M',
+                              'M',
+                              ifelse(multinucleated,
+                                     paste0('multi'),
+                                     phase))) %>%
+  ungroup() %>%
+  group_by(sirna, drug, elapsed, phase_multi) %>%
+  summarize(n_cell_sub = sum(n_cell_sub)) %>%
+  ungroup() %>%
+  group_by(sirna, drug, elapsed) %>%
+  mutate(n_cell_total = sum(n_cell_sub),
+         prop_cells = n_cell_sub/n_cell_total) %>%
+  mutate(phase_multi = factor(phase_multi, levels = c('multi', 'G1', 'S/G2', 'M'))) %>%
+  mutate(drug_full = factor(ifelse(drug == 'dmso',
+                            'DMSO',
+                            '1nM PTX'),
+                            levels = c('DMSO', '1nM PTX')))
+
+ggplot(l4_2 %>% filter(sirna %in% c('ELF3', 'FOSL1', 'NonTarget', 'PLK1')), aes(x = elapsed, y = prop_cells, fill = phase_multi))+
+  geom_col()+
+  facet_grid(drug~sirna)+
+  xlim(0, 72)+
+  theme_bw()+
+  xlab('Time elapsed (hours)')+
+  ylab('Proportion of cells')+
+  theme(axis.title = element_text(size = 18),
+        title = element_text(size = 22))+
+  ggtitle('B: HCC1143 state over time')
+
+ggplot(l4_2 %>% filter(sirna %in% c('ELF3', 'FOSL1', 'NonTarget', 'PLK1')), aes(x = elapsed, y = n_cell_sub, color = drug))+
+    geom_smooth(alpha = 0.9)+
+    facet_grid(phase_multi~sirna, scales = 'free_y')+
+  theme_bw()+
+  xlim(0, 72)
+
+phenotype_col_dict <- tibble(phenotype = unique(l4_2$phase_multi)) %>%
+  mutate(phenotype = factor(phenotype, levels = levels(l4_2$phase_multi))) %>%
+  arrange(phenotype) %>%
+  mutate(color = scico::scico(n = 4, palette = 'batlow'))
+
+
+l4_2_smooth <- l4_2 %>%
+  group_by(sirna, drug) %>%
+  arrange(elapsed) %>%
+  mutate(roll_mean = data.table::frollmean(n_cell_sub, n = 5)) %>%
+  group_by(sirna, drug, elapsed) %>%
+  mutate(n_cell_smooth = sum(roll_mean),
+         prop_cells_smooth = roll_mean/n_cell_smooth)
+  
+
+f5b <- ggplot(l4_2_smooth %>% filter(sirna %in% c('ELF3', 'FOSL1', 'NFE2L2', 'IRF9', 'NonTarget')), aes(x = elapsed, y = roll_mean, fill = phase_multi, color = phase_multi))+
+  geom_col()+
+  facet_grid(drug_full~sirna, space = 'free_y', scales = 'free_y')+
+  xlim(0, 72)+
+  xlab('Time elapsed (hours)')+
+  ylab('Cell Count')+
+  ggtitle('5B: HCC1143 phases over time')+
+  labs(fill = 'Phenotype')+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top')+
+  scale_x_continuous(breaks = seq(0,72,24))+
+  scale_fill_manual(values = phenotype_col_dict$color)+
+  scale_color_manual(values = phenotype_col_dict$color)+
+  labs(fill = '')+
+  guides(color = 'none')
+
+
+f5b
+
+ggsave(filename = paste0(fig_dir, 'figure_5b', figure_suffix),
+       plot = f5b,
+       width = 5,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# Normalize smoothed cell count to start of the experiment
+l4_2_t0 <- l4_2 %>%
+  group_by(sirna,drug) %>%
+  filter(elapsed == 0.25) %>%
+  mutate(t0_ncell = n_cell_total) %>%
+  dplyr::select(sirna, drug, t0_ncell) %>%
+  distinct()
+
+l4_2_smooth <- left_join(x = l4_2_smooth,
+                         y = l4_2_t0,
+                         by = c('sirna', 'drug')) %>%
+  mutate(rel_phase_count = roll_mean/t0_ncell)
+
+f5b2 <- ggplot(l4_2_smooth %>% filter(sirna %in% c('ELF3', 'FOSL1', 'NFE2L2', 'IRF9', 'NonTarget')), aes(x = elapsed, y = rel_phase_count, fill = phase_multi, color = phase_multi))+
+  geom_col()+
+  facet_grid(drug_full~sirna, space = 'free_y', scales = 'free_y')+
+  xlim(0, 72)+
+  xlab('Time elapsed (hours)')+
+  ylab('Relative Count')+
+  ggtitle('5B: HCC1143 phases over time')+
+  labs(fill = 'Phenotype')+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top')+
+  scale_x_continuous(breaks = seq(0,72,24))+
+  scale_fill_manual(values = phenotype_col_dict$color)+
+  scale_color_manual(values = phenotype_col_dict$color)+
+  labs(fill = '')+
+  guides(color = 'none')
+
+f5b2
+
+ggsave(filename = paste0(fig_dir, 'figure_5b2', figure_suffix),
+       plot = f5b2,
+       width = 5.5,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+```
+
+## SF6B: Markov inferred heterotypic transition rates
+
+```{r}
+markov_dir <- 'deps/230828_markov_rsmre_nodeath_s0e24_1hr_pm9/'
+
+m_files <- list.files(path = markov_dir, pattern = '*_markov.rds')
+
+m_list <- list()
+full_m_list <- list()
+bt_list <- list()
+for(i in 1:length(m_files)){
+  temp <- readRDS(paste0(markov_dir, m_files[i]))
+  
+  curr_sirna <- str_split(m_files[i], pattern = '_', simplify = TRUE)[,1]
+  curr_drug <- str_split(m_files[i], pattern = '_', simplify = TRUE)[,2]
+  
+  full_m_list[[str_remove(m_files[i], pattern = '_markov.rds')]] <- temp
+  
+  # pull and format best transition matrix
+  
+  temp_bt <- temp[[length(temp)]]$best_transition %>%
+    as_tibble() %>%
+    mutate(prior = colnames(.)) %>%
+    gather(-prior, key = 'post', value = 'transition_rate') %>%
+    mutate(file = m_files[i]) %>%
+    mutate(sirna = str_split(file, pattern = '_', simplify = TRUE)[,1],
+           drug = str_split(file, pattern = '_', simplify = TRUE)[,2])
+  
+  m_list[[i]] <- temp_bt
+  
+  # Markov output
+  
+  curr_markov_out <- temp[[length(temp)]]$markov_output %>%
+    mutate(sirna = curr_sirna,
+           drug = curr_drug)
+  
+  if(i == 1){
+    markov_out <- curr_markov_out
+  }else{
+    markov_out <- rbind(markov_out, curr_markov_out)
+  }
+  
+  # Best transitions
+  bt_list[[paste(curr_sirna, curr_drug, sep = '_')]] <- temp[[length(temp)]]$best_transition
+  
+}
+
+m_tib0 <- do.call(rbind, m_list) %>%
+  mutate(prior = str_remove(prior, pattern = '_mono')) %>%
+  mutate(post = str_remove(post, pattern = '_mono')) %>%
+  mutate(transition = paste0(prior, ' -> ', post)) %>%
+  mutate(sirna_drug = paste0(sirna, '_', drug))
+
+m_tib <- m_tib0 %>%
+  filter(prior != post)
+
+m_spread <- m_tib %>%
+  dplyr::select(transition_rate, transition, sirna_drug) %>%
+  spread(key = sirna_drug, value = transition_rate)
+
+m_df <- data.frame(m_spread[,-1],
+                   row.names = m_spread$transition)
+
+m_filt <- m_df[rowSums(m_df) > 0 ,]
+
+col_anno <- m_tib %>%
+  dplyr::select(drug, sirna_drug) %>%
+  distinct() %>%
+  data.frame(., row.names = 'sirna_drug')
+
+# Set up custom color ramp
+ramplength <- 101
+custombreaks <- seq(-2.5, 2.5, length.out = ramplength)
+colorramp <- scico::scico(n = ramplength,
+                          palette = 'vik')
+
+tm_row_order <- rownames(m_filt)[c(1,4,2,3)]
+
+# pheatmap::pheatmap(m_filt[tm_row_order,],
+#                    display_numbers = round(m_filt[tm_row_order,], digits = 3),
+#                    scale = 'row',
+#                    annotation_col = col_anno,
+#                    cluster_rows = FALSE,
+#                    breaks = custombreaks,
+#                    color = colorramp,
+#                    main = 'Heterotypic transition rates \n (color z-scored by row)',
+#                    cellwidth = 40,
+#                    cellheight = 40)
+
+# Transposed
+
+anno_colors = list(drug = c(dmso = ptx_cols$colors[2],
+                            ptx = ptx_cols$colors[4]))
+
+pheatmap::pheatmap(t(m_filt[tm_row_order,]),
+                   display_numbers = t(round(m_filt[tm_row_order,], digits = 3)),
+                   scale = 'column',
+                   annotation_row = col_anno,
+                   cluster_cols = FALSE,
+                   annotation_colors = anno_colors,
+                   breaks = custombreaks,
+                   color = colorramp,
+                   main = 'SF6B: Heterotypic transition rates \n (color z-scored by column)',
+                   filename = paste0(fig_dir, '/sf_6b', figure_suffix),
+                   width = 3,
+                   height = 3.5,
+                   fontsize = 4,
+                   treeheight_row = 20)
+
+# for(i in 1:nrow(m_filt)){
+#   ref <- m_filt[i,'NonTarget_dmso']
+#   
+#   curr_lfc <- log2(m_filt[i,]) - log2(ref)
+#   
+#   if(i == 1){
+#     lfc_filt <- curr_lfc
+#   }else{
+#     lfc_filt <- rbind(lfc_filt, curr_lfc)
+#   }
+# }
+# lfc_filt <- lfc_filt[,- which(colnames(lfc_filt) == 'NonTarget_dmso')]
+# 
+# ramplength <- 101
+# custombreaks <- seq(-1*max(abs(lfc_filt)), max(abs(lfc_filt)), length.out = ramplength)
+# colorramp <- scico::scico(n = ramplength,
+#                           palette = 'vik')
+# 
+# pheatmap::pheatmap(lfc_filt[tm_row_order,],
+#                    display_numbers = round(lfc_filt[tm_row_order,], digits = 3),
+#                    annotation_col = col_anno,
+#                    cluster_rows = FALSE,
+#                    breaks = custombreaks,
+#                    color = colorramp,
+#                    main = 'Heterotypic transition rates \n Log2FC from DMSO + siNonTarget',
+#                    number_color = 'gray50',
+#                    filename = paste0(fig_dir, '/figure_5d', figure_suffix),
+#                    width = 3,
+#                    height = 5,
+#                    fontsize = 4)
+
+```
+
+## 5D: Mitotic success rate
+
+```{r}
+m_ratio <- m_tib0 %>%
+  ungroup() %>%
+  filter(prior == 'M' & post %in% c('G1', 'multi')) %>%
+  dplyr::select(post, sirna, drug, transition_rate) %>%
+  group_by(sirna, drug) %>%
+  spread(key = 'post', value = 'transition_rate') %>%
+  mutate(multi_g1_ratio = multi/G1) %>%
+  mutate(fraction_successful_m = G1/(multi + G1))
+
+# Add order
+m_ratio_order <- m_ratio %>%
+  ungroup() %>%
+  filter(drug == 'dmso') %>%
+  arrange(desc(fraction_successful_m)) %>%
+  dplyr::select(sirna) %>%
+  pull()
+
+sf5e <- ggplot(m_ratio %>% mutate(sirna = factor(sirna, levels = m_ratio_order)), aes(x = sirna, y = 1 - fraction_successful_m, fill = drug))+
+  geom_col(position = 'dodge', color = 'black', width = 0.75)+
+  ggtitle('S5E: Inferred Mitotic Failure rate')+
+  ylab('Fraction of \nM->Multi. transitions')+
+  xlab('siRNA')+
+  ylim(0,0.65)+
+  mytheme()+
+  RotatedAxis()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'))+
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]),
+                    labels = c('DMSO',
+                               '1nM PTX'))
+
+
+sf5e
+
+ggsave(filename = paste0(fig_dir, 'sf_5e', figure_suffix),
+       plot = sf5e,
+       width = 3.5,
+       height = 2,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+## 5D: Expected duration
+
+```{r}
+# Compute expected duration
+timestep = 1
+
+trans_id <- m_tib0 %>%
+  filter(prior == post) %>%
+  filter(transition_rate != 1) %>%
+  mutate(expected_duration = 1/(1 - transition_rate)*timestep) %>%
+  mutate(condition = sirna_drug) %>%
+  mutate(state = factor(prior, levels = levels(phenotype_col_dict$phenotype))) %>%
+  mutate(drug_full = factor(ifelse(drug == 'dmso',
+                            'DMSO',
+                            '1nM PTX'),
+                            levels = c('DMSO', '1nM PTX')))
+
+# Order results
+condition_order <- trans_id %>%
+  group_by(condition) %>%
+  filter(state != 'multi') %>%
+  summarize(sum_exp_dur = sum(expected_duration)) %>%
+  arrange(sum_exp_dur) %>%
+  dplyr::select(condition) %>%
+  pull()
+
+sirna_order <- trans_id %>%
+  group_by(sirna) %>%
+  filter(state != 'multi' & drug == 'dmso') %>%
+  summarize(sum_exp_dur = sum(expected_duration)) %>%
+  arrange(sum_exp_dur) %>%
+  dplyr::select(sirna) %>%
+  pull()
+
+trans_id$condition <- factor(trans_id$condition,
+                             levels = condition_order)
+
+trans_id$sirna <- factor(trans_id$sirna,
+                         levels = sirna_order)
+
+f5d <- ggplot(trans_id %>% filter(state != 'multi'), aes(x = sirna, y = expected_duration, fill = state))+
+  geom_col(color = 'black', width = 0.75)+
+  ylab('Expected Duration (hours)')+
+  xlab('siRNA')+
+  facet_grid(.~drug_full)+
+  ggtitle('5D: Inferred phase duration')+
+  mytheme()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top',
+        axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = phenotype_col_dict %>% filter(phenotype != 'multi') %>% dplyr::select(color) %>% pull())+
+  labs(fill = '')
+
+
+f5d
+
+ggsave(filename = paste0(fig_dir, 'figure_5d', figure_suffix),
+       plot = f5d,
+       width = 4,
+       height = 4,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+## F5F: Effective doubling time
+
+
+## Expected Duration
+
+```{r, eval = FALSE}
+# Compute the total expected cell cycle duration for cycling cells (G1 + S/G2 + M duration)
+
+trans_id_sum <- trans_id %>%
+  group_by(sirna, drug, condition) %>%
+  summarize(sum_mononuc_expdur = sum(expected_duration))
+
+# Compute effective doubling time (sum of mononuclear cycling time / fraction successful mitosis)
+edt <- left_join(x = trans_id_sum %>% ungroup(),
+                 y = m_ratio %>% ungroup(),
+                 by = c('sirna', 'drug'),
+                 suffix = c('', '')) %>%
+  mutate(effective_dt = sum_mononuc_expdur/fraction_successful_m) %>%
+  arrange(effective_dt) %>%
+  mutate(condition = factor(condition, levels = condition)) %>%
+  mutate(sirna = factor(sirna, levels = unique(sirna)))
+
+# compute dmso control bulk dt
+nt_dmso <- l4_2 %>%
+  filter(sirna == 'NonTarget' & drug == 'dmso') %>%
+  dplyr::select(sirna, drug, elapsed, n_cell_total) %>%
+  distinct() %>%
+  arrange(elapsed)
+
+rel_count <- nt_dmso$n_cell_total[nrow(nt_dmso)]/nt_dmso$n_cell_total[1]
+time_elapsed <- nt_dmso$elapsed[nrow(nt_dmso)] - nt_dmso$elapsed[1]
+
+nt_dt <- (time_elapsed*log(2))/(log(rel_count))
+
+
+# Visualize
+f5f <- ggplot(edt, aes(x = sirna, y = effective_dt, fill = drug))+
+  geom_col(color = 'black', position = 'dodge', width = 0.75)+
+  ylab('Effective doubling time (hours)')+
+  mytheme()+
+  RotatedAxis()+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'),
+        legend.position = 'top')+
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]))+
+  ggtitle('5F: Inferred effective doubling time')
+
+f5f
+
+ggsave(filename = paste0(fig_dir, 'figure_5f', figure_suffix),
+       plot = f5f,
+       width = 3,
+       height = 2,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+
+```
+
+## 5F: siRNA + PTX synergy
+
+## synergy for sirna + cell cycle combo
+
+```{r}
+
+trans_id_synergy <- trans_id %>%
+  filter(drug == 'ptx' & sirna != 'NonTarget')
+
+for(i in 1:nrow(trans_id_synergy)){
+  curr <- trans_id_synergy[i,]
+  
+  sirna_dmso <- trans_id %>%
+    filter(drug == 'dmso' & sirna == curr$sirna & prior == curr$prior)
+  
+  nt_ptx <- trans_id %>%
+    filter(drug == 'ptx' & sirna == 'NonTarget' & prior == curr$prior)
+  
+  nt_dmso <- trans_id %>%
+    filter(drug == 'dmso' & sirna == 'NonTarget' & prior == curr$prior)
+  
+  hsa <- max(sirna_dmso$expected_duration, nt_ptx$expected_duration)
+  additivity <- sirna_dmso$expected_duration + nt_ptx$expected_duration - nt_dmso$expected_duration
+  
+  curr_out <- tibble(sirna = curr$sirna,
+                     exp_dur = curr$expected_duration,
+                     hsa_dur = hsa,
+                     add_dur = additivity,
+                     ntptx_dur = nt_ptx$expected_duration,
+                     dmso_dur = sirna_dmso$expected_duration,
+                     phase = curr$prior)
+  
+  if(i == 1){
+    synergy_out <- curr_out
+  }else{
+    synergy_out <- rbind(synergy_out,
+                         curr_out)
+  }
+  
+}
+
+synergy_out <- synergy_out %>%
+  mutate(hsa_hr = exp_dur/hsa_dur,
+         add_hr = exp_dur/add_dur,
+         ntptx_hr = exp_dur/ntptx_dur,
+         dmso_hr = exp_dur/dmso_dur) %>%
+  mutate(sirna_phase = paste0(sirna, ' - ', phase)) %>%
+  arrange(hsa_hr) %>%
+  mutate(sirna_phase = factor(sirna_phase, levels = sirna_phase)) %>%
+  mutate(sirna = factor(sirna, levels = c('NFE2L2', 'IRF9', 'FOSL1', 'ELF3', 'PLK1')))
+
+# As stacked facet wrap
+f5e <- ggplot(synergy_out, aes(x = factor(phase, levels = c('G1', 'S/G2', 'M')), y = hsa_hr))+
+  geom_hline(yintercept = 1, linetype = 'dashed')+
+  geom_segment(aes(yend = 1), color = 'gray25', alpha = 0.6)+
+  geom_point(size = 1.5)+
+  ylab('Duration ratio versus \nHSA synergy model')+
+  facet_grid(.~sirna)+
+  scale_y_continuous(breaks = seq(0.5, 3, 0.5))+ 
+  xlab('')+
+  ggtitle('5E: PTX + siRNA synergy')+
+  mytheme()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+f5e
+
+ggsave(filename = paste0(fig_dir, 'figure_5e', figure_suffix),
+       plot = f5e,
+       width = 3.5,
+       height = 2,
+       device=figure_device,
+       dpi=dpi_figures)
+
+```
+
+
+# SF5
+
+## SF5A: cell cycle assignment
+
+```{r}
+l3 <- read_csv('deps/230419_level_3.csv')
+  
+manual_assignments <-   read_csv('deps/230605_ccreporter_training_metadata.csv') %>%
+  filter(as.logical(valid_cell))
+
+meta <- l3 %>% 
+  filter(cell_id %in% manual_assignments$cell_id)
+
+background <- l3[sample(size = 10000, x = nrow(l3)),] %>%
+  mutate(nuc_area_ratio = nuc_s.area_sum/cyto_s.area_mean)
+
+# Merge
+meta2 <- left_join(x = meta,
+          y = manual_assignments,
+          by = 'cell_id',
+          suffix = c('', '.manual')) %>%
+  distinct()
+
+# set thresholds
+sg2_mi_min <- 0.8
+sg2_ti_max <- 0.5
+m_ti_min <- 0.8
+
+meta2.5 <- meta2 %>%
+  ungroup() %>%
+  filter(valid_cell == 1) %>%
+  filter(overall_assignment %in% c('G1', 'M', 'S/G2')) %>%
+  mutate(auto_assign = ifelse(nuc_cyto_ti_ratio > m_ti_min,
+                              'M',
+                              ifelse(nuc_cyto_ti_ratio < sg2_ti_max & perinuc_nuc_mi_ratio > sg2_mi_min,
+                                     'S/G2',
+                                     'G1')))
+
+ggplot()+
+  geom_point(data = background, aes(y = perinuc_nuc_mi_ratio, x = nuc_cyto_ti_ratio), color = 'gray')+
+  geom_point(data = meta2.5, aes(y = perinuc_nuc_mi_ratio, x = nuc_cyto_ti_ratio, group = cycling, color = as.factor(overall_assignment)), size = 1.5)+
+  theme_bw()+
+  ylab('Mean intensity ratio (perinuc/nuc)')+
+  xlab('Total Intensity ratio (Nuclear / cytoplasmic)')+
+  geom_segment(aes(x = -Inf, y = sg2_mi_min, xend = sg2_ti_max, yend = sg2_mi_min))+
+  geom_segment(aes(x = sg2_ti_max, y = sg2_mi_min, xend = sg2_ti_max, yend = Inf))+
+  geom_vline(xintercept = m_ti_min)+
+  xlim(0,1)
+
+sf5a <- ggplot()+
+  geom_point(data = meta2.5, aes(y = perinuc_nuc_mi_ratio, x = nuc_cyto_ti_ratio, group = cycling, color = as.factor(overall_assignment)), size = 2)+
+  mytheme()+
+  ylab('Mean intensity ratio \n (Perinuclear/Nuclear)')+
+  xlab('Total Intensity ratio \n (Nuclear/Cytoplasmic)')+
+  geom_segment(aes(x = -Inf, y = sg2_mi_min, xend = sg2_ti_max, yend = sg2_mi_min))+
+  geom_segment(aes(x = sg2_ti_max, y = sg2_mi_min, xend = sg2_ti_max, yend = Inf))+
+  geom_segment(aes(x = m_ti_min, y = -Inf, xend = m_ti_min, yend = 0.8))+
+  geom_segment(aes(x = m_ti_min, y = 0.8, xend = Inf, yend = 0.8))+
+  xlim(0,1)+
+  ggtitle('S5A: Reporter quantification versus manual assignment')+
+  theme(legend.position = 'top')+
+  labs(color = 'Manual Assignment')+
+  scale_color_manual(values = phenotype_col_dict$color[1:3])
+
+sf5a
+
+ggsave(filename = paste0(fig_dir, 'sf_5a', figure_suffix),
+       plot = sf5a,
+       width = 4,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+```
+
+
+
+## SF6B: Heatmap of heterotypic transition rates
+
+```{r}
+pheatmap::pheatmap(t(m_filt[tm_row_order,]),
+                   display_numbers = t(round(m_filt[tm_row_order,], digits = 3)),
+                   scale = 'column',
+                   annotation_row = col_anno,
+                   cluster_cols = FALSE,
+                   breaks = custombreaks,
+                   annotation_colors = anno_colors,
+                   color = colorramp,
+                   main = 'S5B: Heterotypic transition rates \n (color z-scored by column)',
+                   filename = paste0(fig_dir, '/sf_5b', figure_suffix),
+                   width = 3,
+                   height = 3.5,
+                   fontsize = 5,
+                   treeheight_row = 20)
+```
+
+
+## SF6C/D: Markov output vs observation
+
+```{r}
+markov_gathered <- markov_out %>%
+  pivot_longer(cols = -c(elapsed, sirna, drug),
+               names_to = 'phase_multi',
+               values_to = 'n_cell_sub') %>%
+  mutate(phase_multi = str_remove(phase_multi, pattern = '_mono'))
+
+sf5c <- ggplot(l4_2 %>% filter(drug == 'dmso'), aes(x = elapsed, y = n_cell_sub, color = 'Experimental Data'))+
+    geom_point(alpha = 0.5, size = 0.25)+
+    facet_grid(phase_multi~sirna, scale = 'free')+
+    geom_line(data = markov_gathered %>% filter(drug == 'dmso'), aes(x = elapsed, y = n_cell_sub, color = 'Markov Predicted'), size = 1, alpha = 0.7)+
+  mytheme()+
+  scale_y_log10()+
+  ylab('Number of Cells')+
+  xlab('Time (Hours)')+
+  ggtitle('S5C: Observed cell counts vs Markov prediction \n (DMSO treated for 72 hours)')+
+  labs(color = '')+
+  theme(strip.text = element_text(size = 6),
+        legend.position = 'none',
+        axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  scale_color_manual(values = c('black', 'red'))+
+  scale_x_continuous(breaks = c(0,24,48,72))
+
+sf5d <- ggplot(l4_2 %>% filter(drug == 'ptx'), aes(x = elapsed, y = n_cell_sub, color = 'Experimental Data'))+
+    geom_point(alpha = 0.5, size = 0.25)+
+    facet_grid(phase_multi~sirna, scale = 'free')+
+    geom_line(data = markov_gathered %>% filter(drug == 'ptx'), aes(x = elapsed, y = n_cell_sub, color = 'Markov Predicted'), size = 1, alpha = 0.7)+
+  mytheme()+
+  scale_y_log10()+
+  ylab('Number of Cells')+
+  xlab('Time (Hours)')+
+  ggtitle('S5D: Observed cell counts vs Markov prediction \n (1nM PTX treated for 72 hours)')+
+  labs(color = '')+
+  theme(strip.text = element_text(size = 6),
+        legend.position = 'none',
+        axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  scale_color_manual(values = c('black', 'red'))+
+  scale_x_continuous(breaks = c(0,24,48,72))
+
+#
+ggsave(filename = paste0(fig_dir, 'sf_5c', figure_suffix),
+       plot = sf5c,
+       width = 3.75,
+       height = 3.25,
+       device=figure_device,
+       dpi=dpi_figures)
+
+ggsave(filename = paste0(fig_dir, 'sf_5d', figure_suffix),
+       plot = sf5d,
+       width = 3.75,
+       height = 3.25,
+       device=figure_device,
+       dpi=dpi_figures)
+
+```
+
+## SF6A/B: Error visualization
+
+### Dependency functions
+
+```{r}
+rmsre_fun <- function(obs, exp){
+  ((length(unlist(obs))^-1 * sum(((exp - obs)/obs)^2)) )^0.5
+}
+
+rmsre_by_col <- function(obs, exp, metric = 'mean'){
+  
+  for(i in 1:ncol(obs)){
+    curr_error <- rmsre_fun(obs[,i], exp[,i])
+    
+    if(i == 1){
+      running_error <- curr_error
+    }else{
+      running_error <- c(running_error, curr_error)
+    }
+    
+  }
+  
+  if(metric == 'mean'){
+    error_out <- mean(running_error)
+  }
+  
+  if(metric == 'max'){
+    error_out <- max(running_error)
+  }
+  
+  return(error_out)
+}
+
+# construct loess fit from obs data
+obs_to_loess <- function(x, span = 0.1, degree = 1){
+  
+  g1_mod <- loess(G1~elapsed, x, span = span, degree = degree)
+  
+  m_mod <- loess(M~elapsed, x, span = span, degree = degree)
+  
+  sg2_mod <- loess(`S/G2`~elapsed, x, span = span, degree = degree)
+  
+  multi_mod <- loess(multi~elapsed, x, span = span, degree = degree)
+  
+  loess_out <- tibble(elapsed = x$elapsed,
+                      G1 = g1_mod$fitted,
+                      M = m_mod$fitted,
+                      `S/G2` = sg2_mod$fitted,
+                      multi = multi_mod$fitted)
+  
+  return(loess_out)
+  
+}
+
+
+
+l4_3 <- l4_2 %>%
+  ungroup() %>%
+  group_by(drug, sirna, phase_multi) %>%
+  mutate(roll_mean = data.table::frollmean(n_cell_sub, n = 5))
+```
+
+### Compute error for all conditions
+
+```{r}
+
+all_conditions <- l4_2 %>%
+  ungroup() %>%
+  dplyr::select(sirna, drug) %>%
+  distinct()
+
+for(i in 1:nrow(all_conditions)){
+  
+  # Preprocess same as markov training (running mean filtering)
+  
+  curr_condition <- all_conditions[i,]
+
+  curr <- l4_2 %>%
+    filter(drug == curr_condition$drug & sirna == curr_condition$sirna) %>%
+    mutate(state = phase_multi) %>%
+    group_by(elapsed, state)
+  
+  curr_zeroes <- expand.grid(elapsed = unique(curr$elapsed), state = unique(curr$state)) %>%
+    as_tibble() %>%
+    mutate(n_cell_sub = 0) %>%
+    mutate(elapsed_state = paste(elapsed, state, sep = '_')) %>%
+    filter(!elapsed_state %in% paste(curr$elapsed, curr$state, sep = '_')) %>%
+    dplyr::select(-elapsed_state)
+  
+  curr <- rbind(curr, curr_zeroes) %>%
+    arrange(elapsed) %>%
+    group_by(state) %>%
+    mutate(roll_mean = data.table::frollmean(n_cell_sub, n = 5))
+  
+  states <- unique(curr$state)
+  
+  cellstate_data <- curr %>%
+    mutate(counts = roll_mean)  %>%
+    filter(!is.na(counts)) %>%
+    filter(elapsed >= 0 & elapsed %in% seq(from = 1, to = 96, by = 1)) %>%
+    dplyr::select(elapsed, counts, state) %>%
+    mutate(state = factor(state, levels = states)) %>%
+    group_by(elapsed) %>%
+    spread(key = state, value = counts, fill = 0)
+  
+  # Compute loess fit and extract markov expected values
+  
+  loess_exp <- obs_to_loess(cellstate_data, degree = 2, span = 0.75)
+  
+  curr_full_markov <- full_m_list[which(names(full_m_list) == paste0(curr_condition$sirna,
+                                                                     '_',
+                                                                     curr_condition$drug))] %>%
+    unlist(., recursive = FALSE)
+  
+  markov_exp <- curr_full_markov[[length(curr_full_markov)]]$markov_output
+  colnames(markov_exp) <- str_remove(colnames(markov_exp), pattern = '_mono')
+
+  obs <- cellstate_data %>%
+    filter(elapsed %in% markov_exp$elapsed) %>%
+    ungroup() %>%
+    arrange(elapsed) %>%
+    dplyr::select(-elapsed)
+  
+  
+  markov_error <- rmsre_by_col(obs = obs,
+                               exp = markov_exp %>% dplyr::select(-elapsed))
+  
+  loess_error <- rmsre_by_col(obs = obs,
+                               exp = loess_exp %>% filter(elapsed %in% markov_exp$elapsed) %>%
+                                dplyr::select(-elapsed))
+  
+  p1 <- ggplot()+
+    geom_point(data = cellstate_data, color = 'black', aes(x = elapsed, y = G1))+
+    geom_line(data = markov_exp, color = 'red', aes(x = elapsed, y = G1), size = 1.5, alpha = 0.7)+
+    geom_line(data = loess_exp, color = 'blue', aes(x = elapsed, y = G1), size = 1.5, alpha = 0.7)+
+    mytheme()+
+    scale_y_log10()
+  
+  p2 <- ggplot()+
+    geom_point(data = cellstate_data, color = 'black', aes(x = elapsed, y = M))+
+    geom_line(data = markov_exp, color = 'red', aes(x = elapsed, y = M), size = 1.5, alpha = 0.7)+
+    geom_line(data = loess_exp, color = 'blue', aes(x = elapsed, y = M), size = 1.5, alpha = 0.7)+
+    mytheme()+
+    scale_y_log10()
+  
+  p3 <- ggplot()+
+    geom_point(data = cellstate_data, color = 'black', aes(x = elapsed, y = multi))+
+    geom_line(data = markov_exp, color = 'red', aes(x = elapsed, y = multi), size = 1.5, alpha = 0.7)+
+    geom_line(data = loess_exp, color = 'blue', aes(x = elapsed, y = multi), size = 1.5, alpha = 0.7)+
+    mytheme()+
+    scale_y_log10()
+  
+  p4 <- ggplot()+
+    geom_point(data = cellstate_data, color = 'black', aes(x = elapsed, y = `S/G2`))+
+    geom_line(data = markov_exp, color = 'red', aes(x = elapsed, y = `S/G2`), size = 1.5, alpha = 0.7)+
+    geom_line(data = loess_exp, color = 'blue', aes(x = elapsed, y = `S/G2`), size = 1.5, alpha = 0.7)+
+    mytheme()+
+    scale_y_log10()
+  
+  gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 1)
+  
+  if(curr_condition$sirna == 'NonTarget' & curr_condition$drug == 'ptx'){
+    sf6a_csd <- cellstate_data %>%
+      gather(-elapsed, key = 'phenotype', value = 'count')
+    sf6a_loess <- loess_exp %>%
+      gather(-elapsed, key = 'phenotype', value = 'count')
+  }
+  
+  # Pull expected error from markov output
+  
+  for(k in 1:nrow(markov_exp)){
+    curr_time = markov_exp$elapsed[k]
+    
+    curr_csd <- cellstate_data %>%
+      ungroup() %>%
+      filter(elapsed == curr_time) %>%
+      dplyr::select(-elapsed) %>%
+      t()
+    
+    curr_me <- markov_exp %>%
+      ungroup() %>%
+      filter(elapsed == curr_time) %>%
+      dplyr::select(-elapsed) %>%
+      t()
+    
+    #test_out <- chisq.test(x = curr_csd, y = curr_me)
+    test_out <- chisq.test(x = cbind(curr_csd, curr_me))
+    
+    chisq_out <- tibble(elapsed = curr_time,
+                        p_value = test_out$p.value,
+                        statistic = test_out$statistic,
+                        sirna = curr_condition$sirna,
+                        drug = curr_condition$drug)
+    if(k == 1 & i == 1){
+      chisq_results <- chisq_out
+    }else{
+      chisq_results <- rbind(chisq_results, chisq_out)
+    }
+    
+  }
+  
+  
+  for(j in 1:length(curr_full_markov)){
+    curr_epoch_error <- tibble(epoch = j,
+                               error = curr_full_markov[[j]]$error,
+                               sirna = curr_condition$sirna,
+                               drug = curr_condition$drug)
+    
+    if(j == 1){
+      ex_error <- curr_epoch_error
+    }else{
+      ex_error <- rbind(ex_error, curr_epoch_error)
+    }
+  }
+  
+  # Visualize
+  ggplot(ex_error, aes(x = epoch, y = error))+
+    geom_point()+
+    theme_bw()+
+    ylab('Average RMSRE')+
+    xlab('Epoch')+
+    ggtitle('Error over time:')+
+    geom_hline(yintercept = loess_error, color = 'blue', linetype = 'dashed')+
+    ylim(0,1.2*max(ex_error$error))
+  
+  # Compute error out tib
+  
+  curr_error <- ex_error %>%
+    mutate(sirna = curr_condition$sirna,
+           drug = curr_condition$drug)
+  
+  curr_loess <- tibble(sirna = curr_condition$sirna,
+                       drug = curr_condition$drug,
+                       loess_error = loess_error)
+  
+  if(i == 1){
+    error_tib <- curr_error
+    loess_tib <- curr_loess
+    epoch_error <- ex_error
+  }else{
+    error_tib <- rbind(error_tib, curr_error)
+    loess_tib <- rbind(loess_tib, curr_loess)
+    epoch_error <- rbind(epoch_error, ex_error)
+  }
+  
+}
+
+ggplot(error_tib, aes(x = epoch, y = error))+
+  geom_point()+
+  geom_abline(data = loess_tib, aes(intercept = loess_error, slope = 0), color = 'blue', linetype = 'dashed')+
+  facet_grid(drug~sirna)+
+  ylim(0,0.5)+
+  theme_bw()+
+  scale_x_continuous(breaks = c(1:7*2))+
+  ggtitle('SF5C: Markov error over epochs')+
+  ylab('Average RMSRE')
+
+final_error <- error_tib %>%
+  filter(epoch == 15) %>%
+  left_join(x = .,
+            y = loess_tib,
+            by = c('sirna', 'drug'),
+            suffix = c('', '')) %>%
+  mutate(error_over_loess = error - loess_error) %>%
+  mutate(full_condition = paste0(sirna, '_', drug))
+  
+ggplot(final_error, aes(x = sirna, y = error_over_loess, color = drug))+
+  geom_point()+
+  theme_bw()+
+  RotatedAxis()+
+  ylim(0, max(final_error$error_over_loess)*1.2)+
+  ggtitle('SF5D: Markov error over loess')+
+  ylab('Average(Markov RMSRE) - Average(Loess RMSRE)')
+
+ggplot(chisq_results, aes(x = elapsed, y = p_value, color = p_value < 0.05))+
+  geom_point()+
+  theme_bw()+
+  facet_wrap(sirna~drug)
+
+ggplot(chisq_results, aes(x = elapsed, y = -log10(p_value), color = p_value < 0.05))+
+  geom_point()+
+  theme_bw()+
+  facet_wrap(sirna~drug)+
+  geom_hline(yintercept = -log10(0.05), linetype = 'dashed')
+
+ggplot(chisq_results, aes(x = elapsed, y = statistic, color = p_value < 0.05))+
+  geom_point()+
+  theme_bw()+
+  facet_wrap(sirna~drug)
+
+ggplot(chisq_results, aes(x = sirna, y = p_value, fill = drug))+
+  geom_violin()+
+  theme_bw()+
+  geom_hline(yintercept = 0.05, linetype = 'dashed')
+
+chisq_sum <- chisq_results %>%
+  group_by(sirna, drug) %>%
+  summarize(rejection_rate = sum(p_value < 0.05)/n())
+
+chisq_sum
+
+
+```
+
+## SF6 A/B/C: Error metrics for markov model
+
+```{r}
+# Add back drug_full name
+
+error_tib <- error_tib %>%
+  mutate(drug_full = ifelse(drug == 'dmso',
+                            'DMSO',
+                            '1nM PTX'))
+
+loess_tib <- loess_tib %>%
+  mutate(drug_full = ifelse(drug == 'dmso',
+                            'DMSO',
+                            '1nM PTX'))
+
+chisq_results <- chisq_results %>%
+  mutate(drug_full = ifelse(drug == 'dmso',
+                            'DMSO',
+                            '1nM PTX'))
+
+chisq_sum <- chisq_sum %>%
+  mutate(drug_full = ifelse(drug == 'dmso',
+                            'DMSO',
+                            '1nM PTX')) %>%
+  mutate(drug_full = factor(drug_full,
+                            levels = c('DMSO', '1nM PTX')))
+
+# Plot
+
+sf6a <- ggplot()+
+  geom_point(data = sf6a_csd, aes(x = elapsed, y = count, color = 'Experimental (rolling mean)'), alpha = 0.6)+
+  geom_line(data = sf6a_loess, aes(x = elapsed, y = count, group = phenotype, color = 'Loess Fit'))+
+  facet_wrap(~phenotype, ncol = 4, scales = 'free')+
+  mytheme()+
+  scale_color_manual(values = c('black', 'green'))+
+  labs(color = '', y = 'Cell count per phenotype')+
+  ggtitle('S6A: Representative Loess fit (siNonTarget + PTX)')+
+  theme(legend.position = 'top')+
+  scale_x_continuous(breaks = c(0,24,48,72))+
+  xlab('Time (Hours)')
+
+sf6a
+
+ggsave(filename = paste0(fig_dir, 'sf_6a', figure_suffix),
+       plot = sf6a,
+       width = 7,
+       height = 2,
+       device=figure_device,
+       dpi=dpi_figures)
+
+sf6b <- ggplot(error_tib, aes(x = epoch, y = error))+
+  geom_point(aes(color = 'Markov Error'))+
+  geom_abline(data = loess_tib, aes(intercept = loess_error, slope = 0, color = 'Loess Error'))+
+  facet_grid(drug_full~sirna)+
+  ylim(0,0.5)+
+  mytheme()+
+  scale_x_continuous(breaks = c(1:7*2))+
+  ggtitle('S6B: Markov error over epochs')+
+  ylab('Average RMSRE')+
+  scale_color_manual(values = c('green', 'black'))+
+  labs(color = '')+
+  theme(legend.position = 'top')
+
+sf6b
+
+ggsave(filename = paste0(fig_dir, 'sf_6b', figure_suffix),
+       plot = sf6b,
+       width = 7,
+       height = 3.5,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+sf6c <- ggplot(chisq_sum, aes(x = sirna, y = rejection_rate, fill = drug_full, group = drug))+
+  geom_col(position = 'dodge', color = 'black')+
+  geom_text(aes(y = rejection_rate+0.025, label = scales::percent(rejection_rate)))+
+  facet_wrap(~drug_full)+
+  mytheme()+
+  scale_fill_manual(values = c(ptx_cols$colors[2], ptx_cols$colors[4]))+
+  ylab('Chisq rejection rate \n (Markov composition vs Experimental')+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = 'top')+
+  ggtitle('S6C: Single timepoint rejection rate')+
+  ylim(0,0.25)+
+  guides(fill = guide_legend(title = '', ncol = 2))
+
+sf6c
+
+ggsave(filename = paste0(fig_dir, 'sf_6c', figure_suffix),
+       plot = sf6c,
+       width = 7,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+```
+
+
+# 5G/5H: Metabric ELF3
+
+## 5G: Metabric overall survival by ELF3
+
+```{r}
+library(survival)
+library(ggsurvfit)
+#library(gtsummary)
+
+mb_cp <- data.table::fread('../../public_data/metabric_from_cbioportal/brca_metabric/data_clinical_patient.txt',
+                    skip = 4,
+                    header = TRUE)
+
+# Read z-scored mRNA and annotate patients by z-scored ELF3
+mb_mrnaz <- data.table::fread('../../public_data/metabric_from_cbioportal/brca_metabric/data_mrna_illumina_microarray_zscores_ref_diploid_samples.txt',
+                    skip = 0,
+                    header = TRUE)
+
+mrnaz_long <- mb_mrnaz %>%
+  filter(Hugo_Symbol %in% c('IRF9', 'ELF3', 'FOSL1')) %>%
+  dplyr::select(-Entrez_Gene_Id) %>%
+  gather(-Hugo_Symbol, key = 'PATIENT_ID', value = 'mrna_z') %>%
+  spread(key = 'Hugo_Symbol', value = 'mrna_z')
+
+metabric <- full_join(x = mb_cp,
+                      y = mrnaz_long,
+                      by = 'PATIENT_ID',
+                      suffix = c('', ''))
+
+ggplot(data = metabric, aes(x = THREEGENE, y = IRF9, fill = THREEGENE))+
+  geom_violin()
+
+ggplot(data = metabric, aes(x = THREEGENE, y = ELF3, fill = THREEGENE))+
+  geom_violin()
+
+ggplot(data = metabric, aes(x = THREEGENE, y = FOSL1, fill = THREEGENE))+
+  geom_violin()
+
+ggplot(data = metabric, aes(x = INTCLUST, y = IRF9, fill = INTCLUST))+
+  geom_violin()
+
+# Add low/high for each gene
+
+metabric <- metabric %>%
+  mutate(elf3_bracket = ifelse(ELF3 > quantile(ELF3, 0.75, na.rm = TRUE),
+                               'high',
+                               ifelse(ELF3 < quantile(ELF3, 0.25, na.rm = TRUE),
+                                      'low',
+                                      'mid'))) %>%
+  mutate(fosl1_bracket = ifelse(FOSL1 > quantile(FOSL1, 0.75, na.rm = TRUE),
+                               'high',
+                               ifelse(FOSL1 < quantile(FOSL1, 0.25, na.rm = TRUE),
+                                      'low',
+                                      'mid'))) %>%
+  mutate(irf9_bracket = ifelse(IRF9 > quantile(IRF9, 0.75, na.rm = TRUE),
+                               'high',
+                               ifelse(IRF9 < quantile(IRF9, 0.25, na.rm = TRUE),
+                                      'low',
+                                      'mid')))
+
+# metabric <- metabric %>%
+#   mutate(elf3_bracket = ifelse(ELF3 > quantile(ELF3, 0.5, na.rm = TRUE),
+#                                'high',
+#                                'low'))
+
+# Survival analysis
+
+metabric_filt <- metabric %>%
+  filter(!is.na(ELF3)) %>%
+  mutate(elf3_factor = factor(elf3_bracket, levels = c('mid', 'low', 'high')))
+
+os <- Surv(time = metabric_filt$OS_MONTHS,
+     readr::parse_number(metabric_filt$OS_STATUS))
+
+rfs <- Surv(time = metabric_filt$RFS_MONTHS,
+     readr::parse_number(metabric_filt$RFS_STATUS))
+
+
+f5g <- survfit2(rfs ~ elf3_bracket , data = metabric_filt) %>%
+  ggsurvfit()+
+  labs(x = 'months', y = 'Recurrence Free \nSurvival Probability')+
+  add_censor_mark(size = 0.5, alpha = 0.5)+
+  theme(text = element_text(size = 4))+
+  ggtitle('5G: ELF3 delineates outcome')+
+  mytheme()+
+  theme(legend.position = 'top',
+        legend.key.size = unit(0.25, 'cm'))+
+  annotate('text', x = 350, y = 0.925, label = 'high vs low: p = 1e-5\nlow vs mid: p=0.004\nhigh vs mid: p=0.025', size = 3, hjust = 1)
+
+f5g
+
+ggsave(filename = paste0(fig_dir, 'figure_5g', figure_suffix),
+       plot = f5g,
+       width = 3.25,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+
+coxph(rfs ~ elf3_factor, data = metabric_filt)
+
+# survfit(os ~ elf3_bracket, data = metabric_filt) %>% 
+#   tbl_survfit(
+#     probs = 0.5,
+#     label_header = "**Median survival (95% CI)**"
+#   )
+
+# library(htmlwidgets)
+# f5i_table
+# saveWidget(f5i_table, "figures/temp.html")
+# webshot::webshot("figures/temp.html", "figures/temp.png")
+
+
+
+
+# Read non z-scored mRNA
+
+mb_mrna <- data.table::fread('../../public_data/metabric_from_cbioportal/brca_metabric/data_mrna_illumina_microarray.txt',
+                    skip = 0,
+                    header = TRUE)
+
+# Prepare for wilcox auc
+
+mb_mrna_clean <- mb_mrna[!duplicated(mb_mrna$Hugo_Symbol),]
+mb_mrna_clean <- data.frame(mb_mrna_clean[,-'Entrez_Gene_Id'],
+                            row.names = 'Hugo_Symbol')
+
+groups_tibble <- tibble(PATIENT_ID = str_replace(colnames(mb_mrna_clean), pattern = '\\.', replacement = '-')) %>%
+  left_join(x = .,
+            y = metabric %>% dplyr::select(PATIENT_ID, elf3_bracket),
+            by = 'PATIENT_ID',
+            suffix = c('', ''))
+
+presto_out <- presto::wilcoxauc(X = mb_mrna_clean,
+                                y = groups_tibble$elf3_bracket)
+
+high_top <- presto_out %>%
+  filter(group == 'high') %>%
+  arrange(desc(logFC))
+
+# Filter to just high vs low
+
+elf3_high_low_patients <- c(metabric %>% filter(elf3_bracket %in% c('high', 'low')) %>% dplyr::select(PATIENT_ID) %>% pull())
+
+mb_mrna_clean <- mb_mrna[!duplicated(mb_mrna$Hugo_Symbol),]
+mb_mrna_clean <- data.frame(mb_mrna_clean[,-'Entrez_Gene_Id'],
+                            row.names = 'Hugo_Symbol', check.names = FALSE)
+
+mb_mrna_clean <- mb_mrna_clean[,colnames(mb_mrna_clean) %in% elf3_high_low_patients]
+
+groups_tibble <- tibble(PATIENT_ID = colnames(mb_mrna_clean)) %>%
+  left_join(x = .,
+            y = metabric %>% dplyr::select(PATIENT_ID, elf3_bracket),
+            by = 'PATIENT_ID',
+            suffix = c('', ''))
+
+# Perform differential expression
+
+presto_out <- presto::wilcoxauc(X = mb_mrna_clean,
+                                y = groups_tibble$elf3_bracket) %>%
+  mutate(significant = abs(logFC) > 0.5 & padj < 0.05) %>%
+  mutate(significant = ifelse(is.na(significant),
+                              FALSE,
+                              significant))
+
+high_top <- presto_out %>%
+  filter(group == 'high') %>%
+  arrange(desc(logFC)) %>%
+  filter(logFC > 0.5 & padj < 0.05)
+
+sf7a <- ggplot(presto_out %>% filter(group == 'high'), aes(x = logFC, y = -log10(padj)))+
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = 'dashed')+
+  geom_point(aes(color = significant))+
+  ggrepel::geom_text_repel(data = high_top, aes(label = feature), size = 1.5)+
+  mytheme()+
+  ggtitle('S7A: Differential Expression: ELF3 high vs. ELF3 Low')+
+  scale_color_manual(values = c('gray', 'black'))+
+  theme(legend.position = 'top')+
+  ggbreak::scale_y_break(breaks = c(60,150), ticklabels = c(150,160))+
+  ylim(0,160)
+
+sf7a
+
+ggsave(filename = paste0(fig_dir, 'sf_7a', figure_suffix),
+       plot = sf7a,
+       width = 7,
+       height = 4,
+       device=figure_device,
+       dpi=dpi_figures)
+
+
+# survfit(Surv(metabric_filt$RFS_MONTHS, readr::parse_number(metabric_filt$RFS_STATUS)) ~ elf3_bracket, data = metabric_filt) %>%
+#   tbl_survfit(times = 60)
+
+coxph(os ~ elf3_factor, data = metabric_filt)
+```
+
+
+## 5H: MsigDB GSEA results ELF3 high vs ELF3 low
+
+
+```{r}
+# Load libraries and prepare DEG list from presto output
+
+library(clusterProfiler)
+library(msigdbr)
+
+hallmark <- msigdbr::msigdbr(species = 'human', category = 'H')
+
+hallmark_t2g <- hallmark %>%
+  dplyr::select(gs_name, gene_symbol)
+
+deg <- presto_out %>%
+  filter(group == 'high' & !is.na(logFC)) %>%
+  mutate(gene = feature) %>%
+  arrange(desc(logFC))
+
+gene_list <- deg$logFC
+names(gene_list) <- deg$gene
+
+# Perform GSEA and visualize
+
+em <- GSEA(gene_list,
+           TERM2GENE = hallmark_t2g,
+           pvalueCutoff = 1,
+           eps = 0,
+           nPermSimple = 10000)
+
+em_tibble <- em@result %>%
+  arrange(NES) %>%
+  mutate(ID_short = str_remove(ID, pattern = 'HALLMARK_')) %>%
+  mutate(ID_short = factor(ID_short, levels = ID_short))
+
+em_tibble %>%
+  dplyr::select(NES, p.adjust, pvalue) %>%
+  arrange(NES) %>%
+  DT::datatable()
+
+f5f <- ggplot(em_tibble %>% filter(p.adjust < 0.05), aes(x = NES, y = ID_short, fill = p.adjust))+
+  geom_col()+
+  mytheme()+
+  ggtitle('5F: MSigDB GSEA:\nELF3 high vs ELF3 low')+
+  ylab('Hallmark')+
+  scale_fill_gradient(low = 'red', high = 'black')+
+  theme(axis.text.y = element_text(size = 6),
+        plot.title = element_text(hjust = 0.5))
+
+f5f
+
+ggsave(filename = paste0(fig_dir, 'figure_5f', figure_suffix),
+       plot = f5f,
+       width = 4.25,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+# As volcano plot
+
+em_top <- em_tibble %>%
+  arrange(desc(NES)) %>%
+  slice_head(n = 2) %>%
+  dplyr::select(ID) %>%
+  pull()
+
+em_bottom <- em_tibble %>%
+  arrange(NES) %>%
+  slice_head(n = 2) %>%
+  dplyr::select(ID) %>%
+  pull()
+
+f5h2 <- ggplot(em_tibble, aes(x = NES, y = -log10(p.adjust), label = ID))+
+  geom_point()+
+  ggrepel::geom_label_repel(data = em_tibble %>% filter(ID %in% c(em_top, em_bottom)), size = 1.25, min.segment.length = 0.05, alpha = 0.8, max.overlaps = 3, nudge_y = 0.5)+
+  geom_hline(yintercept = -log10(0.05), linetype = 'dashed')+
+  mytheme()+
+  theme(panel.grid.minor = element_blank(),
+        legend.key.size = unit(0.25, 'cm'))+
+  ggtitle('5H: MSigDB GSEA results: \n ELF3 high vs ELF3 low')+
+  ylab('Significance \n -log10(p.adjust)')
+
+f5h2
+
+ggsave(filename = paste0(fig_dir, 'figure_5h2', figure_suffix),
+       plot = f5h2,
+       width = 2.5,
+       height = 3,
+       device=figure_device,
+       dpi=dpi_figures)
+
+```
+
+# Save supplemental data
+
+## SD1: Differentially expressed genes
+
+```{r}
+write_csv(deg_tib, 'sd1.csv')
+```
+
+## SD2: scRNA-seq geneset enrichment
+
+```{r}
+p24_reactome <- p24_pa@result %>%
+  mutate(geneset = 'PTX_24.vs.DMSO_24',
+         enrichmentDB = 'reactome') %>%
+  mutate(ONTOLOGY = 'NA')
+
+p72_reactome <- p72_pa@result %>%
+  mutate(geneset = 'PTX_72.vs.DMSO_72',
+         enrichmentDB = 'reactome') %>%
+  mutate(ONTOLOGY = 'NA')
+
+p72.unique.msigdb <- pac72.unique.ego@result %>%
+  mutate(geneset = 'PTX_72_unique',
+         enrichmentDB = 'MSigDB')
+
+p72.shared.msigdb <- pac72.shared.ego@result %>%
+  mutate(geneset = 'PTX_72_shared',
+         enrichmentDB = 'MSigDB')
+
+sc_enrichment <- rbind(p24_reactome[,colnames(p72.unique.msigdb)],
+                       p72_reactome[,colnames(p72.unique.msigdb)],
+                       p72.unique.msigdb[,colnames(p72.unique.msigdb)],
+                       p72.shared.msigdb[,colnames(p72.unique.msigdb)])
+
+write_csv(sc_enrichment, 'sd2.csv')
+
+```
+
+## SD3: Metabric DEGs, ELF3-high vs ELF3-low
+
+```{r}
+metabric_deg <- presto_out %>%
+  filter(group == 'high') %>%
+  dplyr::select(feature, logFC, statistic, auc, pval, padj)
+
+write_csv(metabric_deg, 'sd3.csv')
+```
+
+## SD4: Metabric MSigDB Hallmark GSEA results
+
+```{r}
+write_csv(em_tibble, 'sd4.csv')
+```
+
+# sessionInfo
+
+```{r}
+sessionInfo()
+```
+
